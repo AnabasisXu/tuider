@@ -5,15 +5,24 @@
 //! **not** link plugin crates. Only files present on disk can be used.
 //!
 //! # Contract
-//! - Plugin returns **UTF-8 text** (markdown/plain) for bodies.
-//! - Host owns ratatui rendering (`md` / plain lines).
+//! - Plugin returns **UTF-8 text** for bodies (see body formats below).
+//! - Host owns ratatui rendering (`md` / plain lines / HTML_V1 CSS).
 //! - All heap strings from plugin must be freed with [`tuider_string_free`].
+//!
+//! # Body text formats
+//! - Default: UTF-8 markdown or plain text (host renders via md/plain).
+//! - HTML envelope (optional): body starts with [`BODY_HTML_V1_PREFIX`], then
+//!   `css`, then `"\n\u{1e}\n"`, then `html`. Host runs CSS subset → terminal lines.
+//!   This is a **body payload** convention; it does not bump [`TUIDER_PLUGIN_ABI`].
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
 
 /// Bump when breaking C ABI.
 pub const TUIDER_PLUGIN_ABI: u32 = 1;
+
+/// Prefix for HTML+CSS body payloads (value stable; do not change without migration).
+pub const BODY_HTML_V1_PREFIX: &str = "TUIDER_HTML_V1\n";
 
 // ── C ABI (exported by every plugin .so) ──────────────────────────────────
 
@@ -100,15 +109,10 @@ pub fn write_err(err: *mut c_char, err_len: usize, msg: &str) {
 
 // ── Host-side opaque source (implemented in host with libloading) ─────────
 
-/// Minimal Rust trait used **inside the host only** (after FFI adaptation).
-pub trait ContentSource: Send {
+/// Text source after FFI adaptation (host loader only).
+pub trait PluginTextSource: Send {
     fn title(&self) -> &str;
     fn entries(&self) -> &[String];
-    /// Returns markdown/plain body text (host will render).
+    /// Markdown / plain / HTML_V1 envelope.
     fn load_text(&mut self, index: usize, width: usize) -> Result<String, String>;
-}
-
-pub struct LoadResult {
-    pub text: String,
-    pub status: String,
 }

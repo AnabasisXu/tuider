@@ -8,12 +8,10 @@ use std::path::{Path, PathBuf};
 use mdict_rs::MdxFile;
 use serde::Deserialize;
 use tuider_plugin_api::{
-    args_vec, cstring_or_null, free_cstring, write_err, TUIDER_PLUGIN_ABI,
+    args_vec, cstring_or_null, free_cstring, write_err, BODY_HTML_V1_PREFIX, TUIDER_PLUGIN_ABI,
 };
 
 const MAX_KEYS_INDEX: usize = 50_000;
-/// Host recognizes this prefix and runs html_css/html_render.
-const HTML_V1: &str = "TUIDER_HTML_V1\n";
 const SEP: &str = "\n\u{1e}\n";
 
 struct DictState {
@@ -134,8 +132,8 @@ fn resolve_paths(cli_paths: &[PathBuf], group: Option<&str>) -> Result<Vec<PathB
 }
 
 fn envelope(css: &str, html: &str) -> String {
-    let mut s = String::with_capacity(HTML_V1.len() + css.len() + SEP.len() + html.len());
-    s.push_str(HTML_V1);
+    let mut s = String::with_capacity(BODY_HTML_V1_PREFIX.len() + css.len() + SEP.len() + html.len());
+    s.push_str(BODY_HTML_V1_PREFIX);
     s.push_str(css);
     s.push_str(SEP);
     s.push_str(html);
@@ -275,7 +273,7 @@ mod tests {
     #[test]
     fn envelope_roundtrip_shape() {
         let e = envelope("span{x}", "<b>hi</b>");
-        assert!(e.starts_with(HTML_V1));
+        assert!(e.starts_with(BODY_HTML_V1_PREFIX));
         assert!(e.contains(SEP));
         assert!(e.ends_with("<b>hi</b>"));
     }

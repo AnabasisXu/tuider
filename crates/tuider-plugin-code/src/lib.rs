@@ -15,7 +15,7 @@ use syntect::highlighting::{Theme, ThemeSet};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 use tuider_plugin_api::{
-    args_vec, cstring_or_null, free_cstring, write_err, TUIDER_PLUGIN_ABI,
+    args_vec, cstring_or_null, free_cstring, write_err, BODY_HTML_V1_PREFIX, TUIDER_PLUGIN_ABI,
 };
 
 const EXTS: &[&str] = &[
@@ -24,7 +24,6 @@ const EXTS: &[&str] = &[
     "sql", "lua", "vim", "zig",
 ];
 
-const HTML_V1: &str = "TUIDER_HTML_V1\n";
 const THEME_NAME: &str = "base16-ocean.dark";
 
 struct CodeState {
@@ -155,7 +154,7 @@ fn highlight_body(path: &Path, text: &str) -> String {
             ".c{r:02x}{g:02x}{b:02x}{{color:#{r:02x}{g:02x}{b:02x}}}\n"
         ));
     }
-    format!("{HTML_V1}{css}\n\u{1e}\n{html}")
+    format!("{BODY_HTML_V1_PREFIX}{css}\n\u{1e}\n{html}")
 }
 
 #[unsafe(no_mangle)]
@@ -305,7 +304,7 @@ mod tests {
     fn rust_highlight_emits_html_v1_and_keyword_color() {
         let src = "fn main() {\n    let x = 1;\n}\n";
         let out = highlight_body(Path::new("main.rs"), src);
-        assert!(out.starts_with(HTML_V1), "prefix missing: {}", &out[..out.len().min(40)]);
+        assert!(out.starts_with(BODY_HTML_V1_PREFIX), "prefix missing: {}", &out[..out.len().min(40)]);
         assert!(out.contains("\n\u{1e}\n"), "css/html separator missing");
         assert!(out.contains("<span class=\"c"), "token spans missing");
         assert!(out.contains("<br>"), "line breaks missing");
@@ -323,7 +322,7 @@ mod tests {
     #[test]
     fn plain_unknown_ext_still_highlights_as_plain() {
         let out = highlight_body(Path::new("notes.unknownlang"), "hello\nworld\n");
-        assert!(out.starts_with(HTML_V1));
+        assert!(out.starts_with(BODY_HTML_V1_PREFIX));
         assert!(out.contains("hello"));
         assert!(out.contains("world"));
     }

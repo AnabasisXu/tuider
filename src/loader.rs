@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use libloading::{Library, Symbol};
 use tuider_plugin_api::{
-    ContentSource, FnAbiVersion, FnClose, FnEntryAt, FnEntryCount, FnHandles, FnId, FnLoadBody,
-    FnName, FnOpen, FnStringFree, FnTitle, TUIDER_PLUGIN_ABI,
+    PluginTextSource, BODY_HTML_V1_PREFIX, FnAbiVersion, FnClose, FnEntryAt, FnEntryCount,
+    FnHandles, FnId, FnLoadBody, FnName, FnOpen, FnStringFree, FnTitle, TUIDER_PLUGIN_ABI,
 };
 
 pub struct LoadedPlugin {
@@ -45,7 +45,7 @@ impl Drop for DynSource {
     }
 }
 
-impl ContentSource for DynSource {
+impl PluginTextSource for DynSource {
     fn title(&self) -> &str {
         &self.title_cache
     }
@@ -114,10 +114,8 @@ impl crate::plugin::ContentSource for HostSource {
     }
 }
 
-const HTML_V1: &str = "TUIDER_HTML_V1\n";
-
 fn render_plugin_body(text: &str, width: usize) -> Vec<ratatui::text::Line<'static>> {
-    if let Some(rest) = text.strip_prefix(HTML_V1) {
+    if let Some(rest) = text.strip_prefix(BODY_HTML_V1_PREFIX) {
         // payload: <css>\n\x1e\n<html>
         let (css_src, html) = match rest.split_once("\n\u{1e}\n") {
             Some((c, h)) => (c, h),
