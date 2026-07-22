@@ -1,10 +1,11 @@
 //! HN plugin cdylib — libtuider_hn.so
 //!
-//! Sidebar = top stories. Body = meta + full article as markdown (host mdterm).
-//! Article fetch is lazy on `load_body` (not at open).
-// ponytail: no comment tree yet — add when asked
+//! Sidebar = top stories. Body = meta + self-text + comments by default.
+//! Full article fetch only when `TUIDER_HN_FETCH_ARTICLE=1`.
+
 
 use std::os::raw::{c_char, c_int, c_void};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
@@ -33,6 +34,8 @@ struct HnItem {
     score: Option<i64>,
     descendants: Option<u32>,
     kids: Option<Vec<u64>>,
+    deleted: Option<bool>,
+    dead: Option<bool>,
 }
 
 struct Story {
@@ -44,7 +47,8 @@ struct Story {
     score: i64,
     by: String,
     comments: u32,
-    /// Cached markdown body (meta + article).
+    kids: Option<Vec<u64>>,
+    /// Cached markdown body (meta + self-text + comments [+ optional article]).
     body: Option<String>,
 }
 
@@ -225,6 +229,7 @@ fn fetch_top_once(limit: usize) -> Result<HnState, String> {
             score: item.score.unwrap_or(0),
             by: item.by.unwrap_or_else(|| "-".into()),
             comments: item.descendants.unwrap_or(0),
+            kids: item.kids,
             body: None,
         });
     }
@@ -262,29 +267,84 @@ fn load_story_markdown(story: &Story) -> String {
         story.title, story.score, story.by, story.comments, link, hn_link
     );
 
-    if let Some(url) = story.url.as_deref() {
-        match fetch_article_markdown(url) {
-            Ok(article) => md.push_str(&article),
-            Err(e) => {
-                md.push_str(&format!("_article fetch failed: {e}_\n\n"));
-                let fb = story_fallback(story);
-                if !fb.starts_with("_no external") {
-                    md.push_str(&fb);
+    if let Some(text) = story.text.as_deref() {
+        let plain = decode_basic_entities(&strip_tags(text));
+        let plain = plain.trim();
+        if !plain.is_empty() {
+            md.push_str(plain);
+            md.push_str("\n\n");
+        }
+    }
+
+    // default: no article HTTP; set TUIDER_HN_FETCH_ARTICLE=1 to enable
+    if std::env::var("TUIDER_HN_FETCH_ARTICLE").as_deref() == Ok("1") {
+        if let Some(url) = story.url.as_deref() {
+            match fetch_article_markdown(url) {
+                Ok(article) => {
+                    md.push_str(&article);
+                    md.push('\n');
                 }
+                Err(e) => md.push_str(&format!("_article fetch failed: {e}_\n\n")),
             }
         }
-    } else {
-        md.push_str(&story_fallback(story));
     }
+
+    append_comments(&mut md, story.kids.as_deref().unwrap_or(&[]));
     md
 }
 
-fn story_fallback(story: &Story) -> String {
-    if let Some(text) = story.text.as_deref() {
+// ponytail: cap comments; full tree later
+const MAX_COMMENTS: usize = 40;
+
+fn append_comments(md: &mut String, root_kids: &[u64]) {
+    if root_kids.is_empty() {
+        return;
+    }
+    let Ok(client) = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .user_agent("tuider-hn/0.1")
+        .build()
+    else {
+        return;
+    };
+
+    md.push_str("## Comments\n\n");
+    let mut queue: VecDeque<(u64, u32)> = root_kids.iter().copied().map(|id| (id, 0)).collect();
+    let mut n = 0usize;
+    while let Some((id, depth)) = queue.pop_front() {
+        if n >= MAX_COMMENTS {
+            break;
+        }
+        let Some(item) = load_item_cached(&client, id) else {
+            continue;
+        };
+        if item.deleted.unwrap_or(false) || item.dead.unwrap_or(false) {
+            continue;
+        }
+        if let Some(kids) = &item.kids {
+            for &k in kids {
+                queue.push_back((k, depth + 1));
+            }
+        }
+        let Some(text) = item.text.as_deref() else {
+            continue;
+        };
         let plain = decode_basic_entities(&strip_tags(text));
-        format!("{plain}\n")
-    } else {
-        "_no external article (self post without text)_\n".into()
+        let plain = plain.trim();
+        if plain.is_empty() {
+            continue;
+        }
+        let by = item.by.as_deref().unwrap_or("-");
+        let indent = "  ".repeat(depth as usize);
+        let mut lines = plain.lines();
+        if let Some(first) = lines.next() {
+            md.push_str(&format!("{indent}- **{by}:** {first}\n"));
+            for line in lines {
+                md.push_str(&format!("{indent}  {line}\n"));
+            }
+            md.push('\n');
+            n += 1;
+        }
     }
 }
 
@@ -387,8 +447,8 @@ fn html_to_markdown(page_url: &str, html: &str) -> String {
         .or(meta.page_title)
         .filter(|t| !t.trim().is_empty())
         .unwrap_or_else(|| page_url.to_string());
-    // text_contents skips script/style; serialize+strip_tags leaks JS
-    let body = decode_basic_entities(&node.text_contents());
+    // serialize + strip_tags keeps block newlines; text_contents collapses structure
+    let body = decode_basic_entities(&strip_tags(&node.to_string()));
     let body = collapse_blank_lines(body.trim());
     if body.is_empty() {
         format!("## {title}\n\n> source: {page_url}\n\n_empty extract (paywall/JS page?)_\n")
@@ -568,13 +628,42 @@ mod tests {
             score: 10,
             by: "alice".into(),
             comments: 2,
+            kids: None,
             body: None,
         };
         let md = load_story_markdown(&story);
         assert!(md.starts_with("# Ask HN: test"));
         assert!(md.contains("Hello & world"));
         assert!(md.contains("**score:** 10"));
+        assert!(!md.contains("## Comments"));
+        assert!(!md.contains("article fetch failed"));
     }
+
+    #[test]
+    fn story_markdown_link_post_skips_article_without_env() {
+        // SAFETY: test-only; ensure opt-in off
+        unsafe {
+            std::env::remove_var("TUIDER_HN_FETCH_ARTICLE");
+        }
+        let story = Story {
+            id: 2,
+            title: "Link post".into(),
+            url: Some("https://example.invalid/no-fetch".into()),
+            text: None,
+            score: 3,
+            by: "bob".into(),
+            comments: 0,
+            kids: None,
+            body: None,
+        };
+        let md = load_story_markdown(&story);
+        assert!(md.contains("# Link post"));
+        assert!(md.contains("**url:** https://example.invalid/no-fetch"));
+        assert!(md.contains("**hn:** https://news.ycombinator.com/item?id=2"));
+        assert!(!md.contains("article fetch failed"));
+        assert!(!md.contains("## Comments"));
+    }
+
 
     #[test]
     fn validate_blocks_localhost() {
