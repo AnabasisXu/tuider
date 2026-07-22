@@ -175,7 +175,11 @@ pub extern "C" fn tuider_plugin_name() -> *const c_char {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tuider_plugin_handles(argc: c_int, argv: *const *const c_char) -> c_int {
     let args = unsafe { args_vec(argc, argv) };
-    if args.iter().any(|a| a == "--code") {
+    // --code, or bare path with known source extension (dict-style claim)
+    if args
+        .iter()
+        .any(|a| a == "--code" || is_code_path(Path::new(a)))
+    {
         1
     } else {
         0
@@ -204,7 +208,7 @@ pub unsafe extern "C" fn tuider_plugin_open(
         i += 1;
     }
     if paths.is_empty() {
-        write_err(err, err_len, "code: need path(s) after --code");
+        write_err(err, err_len, "code: need path(s)");
         return std::ptr::null_mut();
     }
     let mut docs = Vec::new();
@@ -317,6 +321,16 @@ mod tests {
     #[test]
     fn escape_html_entities() {
         assert_eq!(escape_html("a<b>&\"c"), "a&lt;b&gt;&amp;&quot;c");
+    }
+
+    #[test]
+    fn is_code_path_known_exts() {
+        assert!(is_code_path(Path::new("src/ai.rs")));
+        assert!(is_code_path(Path::new("Foo.RS")));
+        assert!(is_code_path(Path::new("x.py")));
+        assert!(!is_code_path(Path::new("README.md")));
+        assert!(!is_code_path(Path::new("notes.txt")));
+        assert!(!is_code_path(Path::new("src")));
     }
 
     #[test]

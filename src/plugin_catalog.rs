@@ -21,8 +21,24 @@ fn claims_hn(args: &[String]) -> bool {
     args.iter().any(|a| a == "-hn" || a == "--hn")
 }
 
+/// Same extension set as `tuider-plugin-code` `EXTS` (keep in sync).
+const CODE_EXTS: &[&str] = &[
+    "rs", "py", "go", "js", "ts", "tsx", "jsx", "c", "h", "cpp", "hpp", "java", "kt", "swift",
+    "rb", "php", "cs", "sh", "bash", "zsh", "fish", "toml", "yaml", "yml", "json", "html", "css",
+    "sql", "lua", "vim", "zig",
+];
+
+fn looks_like_code_path(a: &str) -> bool {
+    std::path::Path::new(a)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| CODE_EXTS.iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
 fn claims_code(args: &[String]) -> bool {
-    args.iter().any(|a| a == "--code")
+    // --code, or bare path with known source ext (dict-style), incl. missing files for hints
+    args.iter()
+        .any(|a| a == "--code" || looks_like_code_path(a))
 }
 
 fn claims_dict(args: &[String]) -> bool {
@@ -109,6 +125,11 @@ mod tests {
         assert!(!claims("hn", &s(&["-u"])));
         assert!(claims("code", &s(&["--code", "src"])));
         assert!(!claims("code", &s(&["-c"])));
+        assert!(claims("code", &s(&["src/ai.rs"])));
+        assert!(claims("code", &s(&["Foo.RS"])));
+        assert!(claims("code", &s(&["lib.py"])));
+        assert!(!claims("code", &s(&["README.md"])));
+        assert!(!claims("code", &s(&["notes.txt"])));
         assert!(claims("dict", &s(&["-g", "en"])));
         assert!(claims("dict", &s(&["--group", "en"])));
         assert!(claims("dict", &s(&["foo.mdx"])));
@@ -125,7 +146,7 @@ mod tests {
         );
         assert_eq!(missing_plugin_hint(&s(&["-hn"]), none), Some("hn"));
         assert_eq!(missing_plugin_hint(&s(&["--code"]), none), Some("code"));
-        assert_eq!(missing_plugin_hint(&s(&["a.mdx"]), none), Some("dict"));
+        assert_eq!(missing_plugin_hint(&s(&["src/ai.rs"]), none), Some("code"));
         // url claims first when both present
         assert_eq!(
             missing_plugin_hint(&s(&["-hn", "-u"]), none),
