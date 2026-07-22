@@ -1,0 +1,16 @@
+[package]
+name = "tuider-plugin-url"
+version = "0.1.0"
+edition = "2024"
+description = "Tuider URL plugin (.so)"
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+name = "tuider_url"
+
+[dependencies]
+tuider-plugin-api = { path = "../tuider-plugin-api" }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+readable-readability = "0.4"
+url = "2"

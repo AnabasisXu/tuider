@@ -1,0 +1,45 @@
+[workspace]
+members = [
+    ".",
+    "crates/tuider-plugin-api",
+    "crates/tuider-plugin-url",
+    "crates/tuider-plugin-hn",
+    "crates/tuider-plugin-code",
+    "crates/tuider-plugin-dict",
+]
+resolver = "2"
+
+[package]
+name = "tuider"
+version = "0.1.0"
+edition = "2024"
+description = "Terminal UI reader — slim core; plugins loaded from .so files"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+
+[features]
+default = ["ai"]
+ai = ["dep:reqwest", "dep:serde_json"]
+# Legacy aliases: plugins are dynamic; these no longer link plugin crates.
+url = []
+hn = []
+dict = []
+code = []
+full = ["ai"]
+
+[[bin]]
+name = "tuider"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.30"
+crossterm = "0.29"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", optional = true }
+serde_yaml = "0.9"
+pulldown-cmark = { version = "0.11", default-features = false, features = ["html"] }
+unicode-width = "0.2"
+base64 = "0.22"
+libloading = "0.8"
+tuider-plugin-api = { path = "crates/tuider-plugin-api" }

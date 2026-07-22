@@ -1,0 +1,547 @@
+//! Layout / draw — ported principles from mdx-tui ui.rs.
+
+use ratatui::layout::{Constraint, Flex, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::Frame;
+
+use crate::app::{App, SearchLayout};
+use crate::theme::Theme;
+
+const MIN_COLS: u16 = 40;
+const MIN_ROWS: u16 = 12;
+const SIDEBAR_BREAKPOINT: u16 = 72;
+const SIDEBAR_WIDTH_WIDE: u16 = 30;
+const SIDEBAR_WIDTH_NARROW: u16 = 18;
+const TOP_HEADWORD_ROWS: u16 = 5;
+const TOP_HEADWORD_ROWS_COMPACT: u16 = 3;
+
+pub fn draw(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+    let theme = app.theme();
+
+    if area.width < MIN_COLS || area.height < MIN_ROWS {
+        let msg = format!(
+            "  屏幕过小 / Terminal too small  \n  Need ≥{}×{}, got {}×{}  \n  请放大终端  ",
+            MIN_COLS, MIN_ROWS, area.width, area.height
+        );
+        let p = Paragraph::new(msg)
+            .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+            .alignment(ratatui::layout::Alignment::Center);
+        let vertical = Layout::vertical([Constraint::Length(5)]).flex(Flex::Center);
+        let [center] = vertical.areas(area);
+        frame.render_widget(p, center);
+        return;
+    }
+
+    frame.render_widget(Paragraph::new("").style(Style::reset()), area);
+
+    let compact_w = area.width < SIDEBAR_BREAKPOINT;
+    let compact_h = area.height < 24;
+
+    #[cfg(feature = "ai")]
+    if app.ai_open() {
+        app.set_list_area(None);
+        if compact_w {
+            // narrow: stack content over AI
+            let v = Layout::vertical([
+                Constraint::Percentage(45),
+                Constraint::Length(1),
+                Constraint::Percentage(55),
+            ])
+            .split(area);
+            let content_col =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(v[0]);
+            app.set_content_area(Some(content_col[0]));
+            draw_content(frame, content_col[0], app);
+            draw_status(frame, content_col[1], app);
+            app.ai_mut().draw(frame, v[2], theme);
+        } else {
+            // wide: content left, AI right (mdx-tui style)
+            let h = Layout::horizontal([
+                Constraint::Percentage(50),
+                Constraint::Length(1),
+                Constraint::Percentage(50),
+            ])
+            .split(area);
+            let content_col =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(h[0]);
+            app.set_content_area(Some(content_col[0]));
+            draw_content(frame, content_col[0], app);
+            draw_status(frame, content_col[1], app);
+            app.ai_mut().draw(frame, h[2], theme);
+        }
+        if app.show_help() {
+            draw_help_overlay(frame, area, app, theme);
+        }
+        return;
+    }
+
+    if app.vim_search_mode() {
+        app.set_list_area(None);
+        let layout = Layout::vertical([
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(2),
+        ])
+        .split(area);
+        app.set_content_area(Some(layout[0]));
+        draw_content(frame, layout[0], app);
+        draw_status(frame, layout[1], app);
+        draw_vim_search(frame, layout[2], app);
+    } else if app.show_sidebar() {
+        let layout_mode = if compact_w {
+            SearchLayout::Top
+        } else {
+            app.search_layout()
+        };
+        match layout_mode {
+            SearchLayout::Left => {
+                let sidebar_width = if area.width < 90 {
+                    SIDEBAR_WIDTH_NARROW
+                } else {
+                    SIDEBAR_WIDTH_WIDE
+                };
+                let h = Layout::horizontal([
+                    Constraint::Length(sidebar_width),
+                    Constraint::Length(1),
+                    Constraint::Min(1),
+                ])
+                .split(area);
+                let left =
+                    Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(h[0]);
+                app.set_list_area(Some(left[1]));
+                app.set_content_area(Some(h[2]));
+                draw_input(frame, left[0], app);
+                draw_list(frame, left[1], app);
+                draw_right(frame, h[2], app);
+            }
+            SearchLayout::Top => {
+                let hw_rows = if compact_h {
+                    TOP_HEADWORD_ROWS_COMPACT
+                } else {
+                    TOP_HEADWORD_ROWS
+                };
+                let search_h: u16 = 3;
+                let mut hw_height = hw_rows + 2;
+                let max_hw = area.height.saturating_sub(search_h).saturating_sub(3);
+                hw_height = hw_height.min(max_hw.max(3));
+                let v = Layout::vertical([
+                    Constraint::Length(search_h),
+                    Constraint::Length(hw_height),
+                    Constraint::Min(1),
+                ])
+                .split(area);
+                app.set_list_area(Some(v[1]));
+                app.set_content_area(Some(v[2]));
+                draw_input(frame, v[0], app);
+                draw_list(frame, v[1], app);
+                draw_right(frame, v[2], app);
+            }
+        }
+    } else {
+        app.set_list_area(None);
+        let layout =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
+        app.set_content_area(Some(layout[0]));
+        draw_content(frame, layout[0], app);
+        draw_status(frame, layout[1], app);
+    }
+
+    if app.nav_open() {
+        crate::app::nav::draw_nav_overlay(frame, area, app, theme);
+    }
+
+    if app.show_help() {
+        draw_help_overlay(frame, area, app, theme);
+    }
+}
+
+fn draw_right(frame: &mut Frame, area: Rect, app: &App) {
+    let layout = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
+    draw_content(frame, layout[0], app);
+    draw_status(frame, layout[1], app);
+}
+
+fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = app.theme();
+    let block = Block::default()
+        .title(" Search ")
+        .title_style(Style::default().fg(Color::Rgb(170, 185, 200)))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let input = app.filter();
+    let max_w = inner.width as usize;
+    let visible = if max_w == 0 {
+        String::new()
+    } else if input.chars().count() > max_w {
+        input
+            .chars()
+            .skip(input.chars().count().saturating_sub(max_w))
+            .collect()
+    } else {
+        input.to_string()
+    };
+    frame.render_widget(
+        Paragraph::new(visible).style(Style::default().fg(theme.search_text())),
+        inner,
+    );
+    if max_w > 0 {
+        let col = input.chars().count().min(max_w.saturating_sub(1)) as u16;
+        // if scrolled, cursor at end of viewport
+        let col = if input.chars().count() > max_w {
+            (max_w.saturating_sub(1)) as u16
+        } else {
+            col
+        };
+        frame.set_cursor_position((inner.x + col, inner.y));
+    }
+}
+
+fn draw_list(frame: &mut Frame, area: Rect, app: &App) {
+    frame.render_widget(Paragraph::new("").style(Style::reset()), area);
+    let theme = app.theme();
+    let names = app.visible_names();
+    let sel = app.visible_sel();
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let items: Vec<ListItem> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let style = if i == sel {
+                theme.headword_selected()
+            } else {
+                Style::default().fg(theme.headword_text())
+            };
+            let mut text = name.clone();
+            if i == sel && inner_width > 0 {
+                let w = text.chars().count();
+                if w < inner_width {
+                    text.push_str(&" ".repeat(inner_width - w));
+                }
+            }
+            ListItem::new(Line::from(Span::styled(text, style)))
+        })
+        .collect();
+
+    let title = format!(" {} ({}) ", app.source_title(), app.filtered_len());
+    let list = List::new(items).block(
+        Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border())),
+    );
+    frame.render_widget(list, area);
+}
+
+fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = app.theme();
+    let title = app.content_title();
+    let block = Block::default()
+        .title(format!(" {title} "))
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(theme.border()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new("").style(Style::reset()), inner);
+
+    let lines = app.body_lines();
+    if lines.is_empty() {
+        let key = |s: &str| Span::styled(s.to_string(), Style::default().fg(theme.key_label()));
+        let desc = |s: &str| Span::styled(s.to_string(), Style::default().fg(theme.muted()));
+        let section = |s: &str| {
+            Span::styled(
+                s.to_string(),
+                Style::default().fg(theme.accent()).add_modifier(Modifier::BOLD),
+            )
+        };
+        let help = vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    "  TUIDER ",
+                    Style::default().fg(theme.title()).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("— 终端阅读器", Style::default().fg(theme.muted())),
+            ]),
+            Line::from(""),
+            Line::from(section("  基本操作")),
+            Line::from(vec![key("    输入字符  "), desc("过滤侧栏条目")]),
+            Line::from(vec![key("    ↑ / ↓    "), desc("浏览列表（侧栏显示时）")]),
+            Line::from(vec![key("    Enter    "), desc("打开选中文档")]),
+            Line::from(vec![key("    Esc      "), desc("清空过滤")]),
+            Line::from(""),
+            Line::from(section("  快捷键")),
+            Line::from(vec![key("    Ctrl+F   "), desc("显示/隐藏侧栏")]),
+            Line::from(vec![key("    Ctrl+S   "), desc("搜索布局：左侧 / 顶部")]),
+            Line::from(vec![key("    /        "), desc("正文 vim 搜索")]),
+            Line::from(vec![key("    n / N    "), desc("下一/上一匹配")]),
+            Line::from(vec![key("    v / V    "), desc("字符/行 visual · y 复制")]),
+            Line::from(vec![key("    f / o    "), desc("链接列表 / 目录大纲")]),
+            Line::from(vec![key("    Alt+f    "), desc("consult 搜索预览跳转")]),
+            Line::from(vec![key("    O        "), desc("打开当前文件目录")]),
+            Line::from(vec![key("    ?        "), desc("帮助")]),
+            Line::from(""),
+            Line::from(section("  滚动")),
+            Line::from(vec![key("    ↑↓ / Pg  "), desc("焦点区")]),
+            Line::from(vec![key("    Alt+↑↓   "), desc("另一区（通常正文）")]),
+        ];
+        frame.render_widget(Paragraph::new(help), inner);
+        return;
+    }
+
+    let max_scroll = lines.len().saturating_sub(inner.height as usize) as u16;
+    let scroll = app.scroll().min(max_scroll);
+    let q = app.vim_query();
+    let line_vis = app.visual_line_range();
+    let char_vis = app.visual_char_sel();
+    let current = app.current_match();
+    let rendered: Vec<Line> = lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let mut line = if !q.is_empty() {
+                highlight_line(line, q, theme, current.filter(|h| h.line == i))
+            } else {
+                line.clone()
+            };
+            if let Some((a, b)) = line_vis {
+                if i >= a && i <= b {
+                    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                    line = Line::from(Span::styled(
+                        text,
+                        Style::default()
+                            .fg(theme.status_focus_fg())
+                            .bg(theme.search_text()),
+                    ));
+                }
+            } else if let Some(sel) = char_vis {
+                if i >= sel.a_line && i <= sel.b_line {
+                    line = paint_char_visual(line, i, &sel, theme);
+                }
+            }
+            line
+        })
+        .collect();
+    frame.render_widget(
+        Paragraph::new(rendered)
+            .scroll((scroll, 0))
+            .wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
+fn paint_char_visual(
+    line: Line<'static>,
+    line_idx: usize,
+    sel: &crate::app::VisualSel,
+    theme: Theme,
+) -> Line<'static> {
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let (start, end) = if line_idx == sel.a_line && line_idx == sel.b_line {
+        (sel.a_col.min(n), sel.b_col.min(n).max(sel.a_col.min(n)))
+    } else if line_idx == sel.a_line {
+        (sel.a_col.min(n), n)
+    } else if line_idx == sel.b_line {
+        (0, sel.b_col.min(n))
+    } else {
+        (0, n)
+    };
+    if start >= end {
+        return line;
+    }
+    let mut spans = Vec::new();
+    if start > 0 {
+        spans.push(Span::styled(
+            chars[..start].iter().collect::<String>(),
+            Style::default().fg(theme.list_text()),
+        ));
+    }
+    spans.push(Span::styled(
+        chars[start..end].iter().collect::<String>(),
+        Style::default()
+            .fg(theme.status_focus_fg())
+            .bg(theme.search_text()),
+    ));
+    if end < n {
+        spans.push(Span::styled(
+            chars[end..].iter().collect::<String>(),
+            Style::default().fg(theme.list_text()),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn highlight_line(
+    line: &Line<'static>,
+    q: &str,
+    theme: Theme,
+    current: Option<crate::app::MatchHit>,
+) -> Line<'static> {
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    if q.is_empty() {
+        return line.clone();
+    }
+    let ql = q.to_lowercase();
+    let chars: Vec<char> = text.chars().collect();
+    let lower_chars: Vec<char> = text
+        .chars()
+        .map(|c| c.to_lowercase().next().unwrap_or(c))
+        .collect();
+    let qchars: Vec<char> = ql.chars().collect();
+    let n = chars.len();
+    let m = qchars.len();
+    if m == 0 || n < m {
+        return line.clone();
+    }
+    let mut has = false;
+    for i in 0..=(n - m) {
+        if lower_chars[i..i + m] == qchars[..] {
+            has = true;
+            break;
+        }
+    }
+    if !has {
+        return line.clone();
+    }
+    let hit = Style::default()
+        .fg(theme.status_focus_fg())
+        .bg(theme.search_text())
+        .add_modifier(Modifier::BOLD);
+    // current match: reverse + bold for stronger focus
+    let cur = Style::default()
+        .fg(theme.status_focus_fg())
+        .bg(Color::Rgb(250, 179, 135)) // peach current
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    let normal = Style::default().fg(theme.list_text());
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut i = 0;
+    while i < n {
+        if i + m <= n && lower_chars[i..i + m] == qchars[..] {
+            let matched: String = chars[i..i + m].iter().collect();
+            let is_cur = current.is_some_and(|h| h.start == i && h.end == i + m);
+            spans.push(Span::styled(matched, if is_cur { cur } else { hit }));
+            i += m;
+        } else {
+            let start = i;
+            i += 1;
+            while i < n && !(i + m <= n && lower_chars[i..i + m] == qchars[..]) {
+                i += 1;
+            }
+            let piece: String = chars[start..i].iter().collect();
+            spans.push(Span::styled(piece, normal));
+        }
+    }
+    Line::from(spans)
+}
+
+fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = app.theme();
+    let focus = app.focus_label();
+    let status = Line::from(vec![
+        Span::styled(
+            format!(" {focus} "),
+            Style::default()
+                .fg(theme.status_focus_fg())
+                .bg(theme.status_focus_bg())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(
+                " {}/{}  {}  ? help  C-q quit ",
+                app.list_sel().saturating_add(1).min(app.filtered_len().max(1)),
+                app.filtered_len(),
+                app.status()
+            ),
+            Style::default().fg(theme.muted()),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(status), area);
+}
+
+fn draw_vim_search(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = app.theme();
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(theme.border()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let line = Line::from(vec![
+        Span::styled("/", Style::default().fg(theme.vim_prompt())),
+        Span::styled(app.vim_input(), Style::default().fg(theme.search_text())),
+    ]);
+    frame.render_widget(Paragraph::new(line), inner);
+}
+
+fn draw_help_overlay(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
+    let entries: &[(&str, &str)] = if app.vim_search_mode() {
+        &[
+            ("Enter", "Confirm search"),
+            ("Esc", "Cancel"),
+            ("n/N", "Next / prev match"),
+            ("?", "Close help"),
+        ]
+    } else {
+        &[
+            ("Type", "Filter sidebar"),
+            ("↑/↓", "List (sidebar on)"),
+            ("Ctrl+F", "Toggle sidebar"),
+            ("Ctrl+S", "Search left/top"),
+            ("/", "In-content search"),
+            ("v/V", "Visual line select"),
+            ("y", "Yank selection (OSC 52)"),
+            ("Alt+L", "AI overlay (if built)"),
+            ("Esc", "Clear filter / visual"),
+            ("Ctrl+Q", "Quit"),
+            ("?", "Close help"),
+        ]
+    };
+    let help_height = (entries.len() as u16) + 4;
+    let help_width: u16 = 44;
+    let popup = centered_rect(help_width, help_height, area);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(if app.vim_search_mode() {
+            " Vim Search "
+        } else {
+            " Tuider "
+        })
+        .title_style(
+            Style::default()
+                .fg(theme.accent())
+                .add_modifier(Modifier::BOLD),
+        )
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border()))
+        .style(Style::default().bg(theme.help_bg()));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let lines: Vec<Line> = entries
+        .iter()
+        .map(|(key, desc)| {
+            Line::from(vec![
+                Span::styled(
+                    format!("  {key:<14}"),
+                    Style::default().fg(theme.key_label()),
+                ),
+                Span::styled((*desc).to_string(), Style::default().fg(theme.muted())),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let vertical = Layout::vertical([Constraint::Length(height)]).flex(Flex::Center);
+    let horizontal = Layout::horizontal([Constraint::Length(width)]).flex(Flex::Center);
+    let [v] = vertical.areas(area);
+    let [h] = horizontal.areas(v);
+    h
+}

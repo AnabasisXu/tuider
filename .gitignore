@@ -1,0 +1,31 @@
+# Build
+/target/
+**/*.rs.bk
+
+# Local plugin binaries (install via pkg / scripts)
+/plugins/*.so
+/plugins/*.dylib
+/plugins/*.dll
+
+# Archives / one-off dumps
+/archive/
+
+# Secrets & local config
+.env
+.env.*
+*.pem
+*.key
+tuider.yml
+.tuider.yml
+**/.config/tuider.yml
+
+# Editor / OS / harness
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+.omp/
+
+# Optional local notes
+*.local.md

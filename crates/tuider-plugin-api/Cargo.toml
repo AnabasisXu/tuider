@@ -1,0 +1,14 @@
+[package]
+name = "tuider-plugin-api"
+version = "0.1.0"
+edition = "2024"
+description = "Tuider plugin ABI + host helpers for dynamic .so plugins"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+ratatui = "0.30"
+
+[features]
+default = []
+# Host-only helpers (optional; host uses libloading separately)
+host = []
