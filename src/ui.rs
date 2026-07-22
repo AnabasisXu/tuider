@@ -42,12 +42,43 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     #[cfg(feature = "ai")]
     if app.ai_open() {
-        app.set_list_area(None);
         if app.ai().maximized {
+            // full AI — no reader chrome
+            app.set_list_area(None);
             app.set_content_area(None);
             app.ai_mut().draw(frame, area, theme);
+        } else if app.show_sidebar() && !compact_w {
+            // sidebar | content | AI — keep headword list visible
+            let sidebar_width = if area.width < 90 {
+                SIDEBAR_WIDTH_NARROW
+            } else {
+                SIDEBAR_WIDTH_WIDE
+            };
+            let main = Layout::horizontal([
+                Constraint::Length(sidebar_width),
+                Constraint::Length(1),
+                Constraint::Min(1),
+            ])
+            .split(area);
+            let left = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(main[0]);
+            let right = Layout::horizontal([
+                Constraint::Percentage(50),
+                Constraint::Length(1),
+                Constraint::Percentage(50),
+            ])
+            .split(main[2]);
+            app.set_list_area(Some(left[1]));
+            draw_input(frame, left[0], app);
+            draw_list(frame, left[1], app);
+            let content_col =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(right[0]);
+            app.set_content_area(Some(content_col[0]));
+            draw_content(frame, content_col[0], app);
+            draw_status(frame, content_col[1], app);
+            app.ai_mut().draw(frame, right[2], theme);
         } else if compact_w {
-            // narrow: stack content over AI
+            // narrow: content over AI (no room for sidebar)
+            app.set_list_area(None);
             let v = Layout::vertical([
                 Constraint::Percentage(45),
                 Constraint::Length(1),
@@ -61,7 +92,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             draw_status(frame, content_col[1], app);
             app.ai_mut().draw(frame, v[2], theme);
         } else {
-            // wide: content left, AI right (mdx-tui style)
+            // wide, no sidebar: content | AI
+            app.set_list_area(None);
             let h = Layout::horizontal([
                 Constraint::Percentage(50),
                 Constraint::Length(1),
