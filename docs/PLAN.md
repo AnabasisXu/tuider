@@ -1,8 +1,8 @@
 # Tuider — 对话规划总览
 
-> 日期：2026-07-21（文档更新）  
-> 来源：mdx-tui 定位讨论 + core/插件边界重划 + 独立 crate 落地。  
-> 状态：**可测交付**；权威边界见 core-roadmap；**下一步见 [NEXT.md](NEXT.md)**。
+> 日期：2026-07-22（文档更新：host-boundary / 动态 cdylib）  
+> 来源：mdx-tui 定位讨论 + core/插件边界重划 + 独立 crate 落地 + 动态 so 演化。  
+> 状态：**可测交付**；**加载权威见 [STATUS.md](STATUS.md)**；**下一步见 [NEXT.md](NEXT.md)**。
 
 ---
 
@@ -34,19 +34,21 @@
 | D3 | **mdx-tui 先不动代码** | 冻结；UI 后续复用移植，不边砍边写新产品 |
 | D4 | **mdx-tui 不再作为长期独立应用形态** | 用户意图：词典能力将来是插件血统，而不是继续以「全能 mdx-tui」演进；**本阶段仍不删不改其代码** |
 | D5 | **默认内容：md + txt** | 裸命令扫 cwd 一层 `*.md` / `*.txt` |
-| D6 | **插件机制** | **独立 crate**（`crates/tuider-plugin-*`）+ Cargo features 编译 + yml `enabled` 加载；非动态 `.so` |
+| D6 | **插件机制** | **动态 cdylib**（`crates/tuider-plugin-*` → `.so`）+ host `dlopen` + `plugin_catalog`；yml `enabled` 为额外门禁。历史「Cargo feature 链入」已作废 |
 | D7 | **插件集** | `url` · `hn` · `dict` · `code`（**不含 AI**） |
-| D8 | **架构方案 A** | 单 bin + `ContentSource`（plugin-api）+ features |
+| D8 | **架构方案 A** | 单 bin + 动态 so + `ContentSource`（host）/ `PluginTextSource`（api） |
 | D9 | **兼容名** | 主命令 `tuider` |
 | D10 | **交付** | core reader + AI + 四插件 crate 可测 |
 | D11 | **AI 属产品 core** | 编译上仍为 `feature = "ai"`，且 **`default = ["ai"]`**；无 key 仍可阅读 |
-| D12 | **default 不含 url** | `url` 仅插件；日常 `cargo build` = 阅读器 + AI |
+| D12 | **default 不含 url** | `url` 仅插件 so；日常 `cargo build` = 阅读器 + AI |
 
 ---
 
 ## 3. 产品边界
 
-> 权威规格：[`docs/superpowers/specs/2026-07-21-tuider-core-roadmap-design.md`](superpowers/specs/2026-07-21-tuider-core-roadmap-design.md)
+> 加载与插件边界**权威**：[STATUS.md](STATUS.md)  
+> 早期路线图：[`docs/superpowers/specs/2026-07-21-tuider-core-roadmap-design.md`](superpowers/specs/2026-07-21-tuider-core-roadmap-design.md)（历史）  
+> host-boundary 设计：[`docs/superpowers/specs/2026-07-22-host-boundary-refactor-design.md`](superpowers/specs/2026-07-22-host-boundary-refactor-design.md)
 
 ### 3.1 Core（产品一等公民）
 
@@ -58,21 +60,24 @@
 - **AI 对话/共读**（`feature = "ai"`，default 开启；无 API key 不阻断阅读）
 - 最小配置；**无词典 / 无 url 也可运行**
 
-### 3.2 插件（feature 关闭则 CLI 与 UI 均不存在）
+### 3.2 插件（无 `.so` 则 CLI 入口不存在）
 
-| Feature | 入口 | 依赖倾向 |
-|---------|------|----------|
-| `url` | `-u` / 裸 URL | HTTP + readability + 缓存 |
-| `hn` | `-hn` | HTTP + 缓存 |
-| `dict` | `.mdx`、群组、CLI 查词 | mdict、HTML/CSS |
-| `code` | 源码扩展名 / 显式模式 | plain → syntect → 可选 tree-sitter |
+| 插件 id | 入口 | 依赖倾向（在插件 crate 内） |
+|---------|------|---------------------------|
+| `url` | `-u` / 裸 URL | HTTP + readability；缓存自管 |
+| `hn` | `-hn` | HTTP；缓存自管 |
+| `dict` | `.mdx`、群组、CLI 查词 | mdict、HTML/CSS 信封 |
+| `code` | `--code` / 源码扩展 | plain → syntect → 可选 tree-sitter |
 
-### 3.3 非目标（第一期）
+Host 空 Cargo feature 名 `url`/`hn`/… 仅为兼容壳，**不**链入代码。发行知识见 `plugin_catalog`。
 
-- 动态 `.so` 插件  
+### 3.3 非目标（第一期 / 二期边界）
+
+- ~~动态 `.so` 插件~~ → **已做**（见 STATUS）  
 - 脚本引擎实现  
 - 在本阶段修改 `mdx-tui` 源码或「精简砍模式」落地  
-- 完整重绘视觉语言（先复用 mdx-tui 的布局/主题原则）
+- 完整重绘视觉语言（先复用 mdx-tui 的布局/主题原则）  
+- HTML 渲染下沉 / AppView / 只信 handles / ABI 协商 → **二期**（见 NEXT）
 
 ---
 
@@ -81,20 +86,23 @@
 ```
 tuider (bin, src/)
 ├── core: app ui md scan config ai theme
-├── plugin-api  (crates/tuider-plugin-api)
-└── plugin crates (Cargo features + yml enabled)
-    tuider-plugin-url | hn | code | dict
+├── loader + plugin_catalog   (dlopen .so；claims/missing/pkg 单源)
+├── plugin-api  (crates/tuider-plugin-api)  ABI v1 + PluginTextSource + BODY_HTML_V1_PREFIX
+└── plugin crates → cdylib
+    libtuider_url.so | hn | code | dict
 ```
 
 **深度模块原则**（Ousterhout）：
 
 - Core 的接口应是「打开可读源 + 跑 TUI +（可选）AI 会话」，不暴露 HN job / dict panel 细节  
-- 插件把复杂性拉下去：网络、缓存 TTL、词典索引都在**独立 crate** 内  
+- 插件把复杂性拉下去：网络、缓存 TTL、词典索引都在**独立 cdylib** 内  
 - 拒绝 pass-through 空 crate；插件只依赖 `tuider-plugin-api`
 
 **默认依赖面（`default = ["ai"]`）**：`ratatui` + `crossterm` + md 渲染 + AI HTTP。  
 **不得**出现在 default：`mdict`、`readable-readability`、HN 栈。  
 **slim（`--no-default-features`）**：仅阅读依赖。
+
+**历史注记：** 早期 D6 曾写「Cargo features + 非动态 so」；已演化为动态 cdylib，该表述作废。
 
 ---
 
@@ -111,7 +119,7 @@ tuider (bin, src/)
 | `mdx-md` 渲染 | 已本地化为 `src/md.rs`（pulldown 路线） |
 | `mdx-ai` | **core** AI 模块（R1），非插件列表项 |
 
-**不要**第一期整文件搬迁：`hn/`、`fetch.rs`、dict HTML/CSS 引擎——属插件里程碑。
+**不要**第一期整文件搬迁：`hn/`、`fetch.rs`、dict HTML/CSS 引擎——属插件里程碑（现已在插件 so 内）。
 
 ---
 
@@ -125,7 +133,7 @@ tuider (bin, src/)
 建议后续：
 
 1. 用户在 `tuider` 目录 **新开 OMP**  
-2. 按 `docs/superpowers/plans/2026-07-21-tuider-implementation.md` 实现  
+2. 实现与边界以 [STATUS.md](STATUS.md) / host-boundary 设计为准  
 3. mdx-tui「砍阅读/HN/URL、只留词典」若仍需要，**另开任务**，与 Tuider 实现解耦  
 
 ---
@@ -135,7 +143,7 @@ tuider (bin, src/)
 1. 规划文档齐全，新会话无需回读本对话即可开工  
 2. `mdx-tui` 工作区无业务代码改动（本会话约束）  
 3. 实现后：`cargo build` 默认产物可打开 md/txt，且依赖树无网络/词典栈  
-4. 打开 `dict`/`hn`/`url`/`ai` feature 时 core 源码无需改分支森林，只注册插件  
+4. 插件以动态 `.so` 加载；host 通过 catalog 认领/缺 so 提示，core 无业务分支森林  
 
 ---
 
@@ -143,19 +151,21 @@ tuider (bin, src/)
 
 - License 与发行合规（dict 依赖 AGPL mdict 时）  
 - AI 多 provider 自动 failover；上游 503 体验  
-- app.rs 键位状态机拆分  
-- dict 大词库索引；code syntect  
+- dict 大词库索引；code syntect 增强  
 - 详见 **[NEXT.md](NEXT.md)**
 
 ### 已修（曾记为问题）
 
 - vim 关键词 span 高亮（非整行）  
 - visual 扩展不再强制置顶  
+- visual 字符级 `v` + 行级 `V`  
+- app 键位 `InputMode` 路由  
+- host 死 `cache` 删除；`plugin_catalog` 单源  
 
 ### 仍在
 
-- visual 仍为行选（非字符级）  
-- 动态 `.so` 不做  
+- visual 仍可继续打磨边界体验  
+- 二期：HTML 下沉、AppView、只信 handles、ABI 协商（见 [NEXT.md](NEXT.md)）
 
 ---
 
@@ -164,11 +174,12 @@ tuider (bin, src/)
 | 文件 | 内容 |
 |------|------|
 | [README.md](../README.md) | 产品入口 |
-| [STATUS.md](STATUS.md) | **现状快照** |
+| [STATUS.md](STATUS.md) | **现状权威快照** |
 | [NEXT.md](NEXT.md) | **下一步目标** |
 | [plugins.md](plugins.md) | 插件运行机制 |
 | [complexity-review.md](complexity-review.md) | 复杂度审查 |
-| [superpowers/specs/2026-07-21-tuider-core-roadmap-design.md](superpowers/specs/2026-07-21-tuider-core-roadmap-design.md) | 现行规格 |
+| [superpowers/specs/2026-07-22-host-boundary-refactor-design.md](superpowers/specs/2026-07-22-host-boundary-refactor-design.md) | host-boundary 设计 |
+| [superpowers/specs/2026-07-21-tuider-core-roadmap-design.md](superpowers/specs/2026-07-21-tuider-core-roadmap-design.md) | 早期路线图（历史） |
 | [superpowers/specs/2026-07-21-tuider-reader-plugins-design.md](superpowers/specs/2026-07-21-tuider-reader-plugins-design.md) | 历史架构稿 |
 | [superpowers/plans/2026-07-21-tuider-implementation.md](superpowers/plans/2026-07-21-tuider-implementation.md) | 旧实施规划 |
 | [hygg-mdterm-format-comparison.md](hygg-mdterm-format-comparison.md) | hygg/mdterm 对标 |
