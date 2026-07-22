@@ -68,6 +68,8 @@ enum StreamEvent {
 
 pub struct AiSession {
     pub open: bool,
+    /// Full-area AI pane (Alt+Shift+L).
+    pub maximized: bool,
     pub configured: bool,
     pub status: String,
     providers: Vec<AiConfig>,
@@ -113,6 +115,7 @@ impl AiSession {
         let configured = !providers.is_empty();
         Self {
             open: false,
+            maximized: false,
             configured,
             status: String::new(),
             providers,
@@ -141,6 +144,7 @@ impl AiSession {
     pub fn toggle(&mut self) {
         self.open = !self.open;
         if !self.open {
+            self.maximized = false;
             self.status.clear();
             return;
         }
@@ -166,6 +170,16 @@ impl AiSession {
             self.active = 0;
         }
         self.status = self.status_line();
+    }
+
+    /// Alt+Shift+L: open maximized if closed; else flip maximized.
+    pub fn toggle_maximize(&mut self) {
+        if !self.open {
+            self.toggle();
+            self.maximized = true;
+        } else {
+            self.maximized = !self.maximized;
+        }
     }
 
     fn status_line(&self) -> String {
@@ -272,6 +286,7 @@ impl AiSession {
         match key.code {
             KeyCode::Esc => {
                 self.open = false;
+                self.maximized = false;
                 self.status.clear();
             }
             KeyCode::Tab if !self.providers.is_empty() => {
@@ -548,10 +563,9 @@ impl AiSession {
             self.scroll = max_scroll;
         }
         let scroll = self.scroll.min(max_scroll);
+        // md is already width-aware; Paragraph wrap would double-wrap assistant bubbles
         frame.render_widget(
-            Paragraph::new(lines)
-                .scroll((scroll, 0))
-                .wrap(Wrap { trim: false }),
+            Paragraph::new(lines).scroll((scroll, 0)),
             inner,
         );
 
@@ -815,6 +829,7 @@ mod tests {
     fn empty_session() -> AiSession {
         AiSession {
             open: true,
+            maximized: false,
             configured: false,
             status: String::new(),
             providers: Vec::new(),

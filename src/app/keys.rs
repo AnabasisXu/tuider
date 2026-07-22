@@ -36,7 +36,11 @@ impl App {
             if key.modifiers.contains(KeyModifiers::ALT)
                 && matches!(key.code, KeyCode::Char('l') | KeyCode::Char('L'))
             {
-                self.ai.toggle();
+                if key.modifiers.contains(KeyModifiers::SHIFT) {
+                    self.ai.toggle_maximize();
+                } else {
+                    self.ai.toggle();
+                }
                 self.status = self.ai.status.clone();
                 return false;
             }
@@ -122,6 +126,15 @@ impl App {
                 return false;
             }
         }
+        // Tab: cycle multi-layer source (dict plugin); AI mode keeps Tab for providers
+        if key.code == KeyCode::Tab && key.modifiers == KeyModifiers::NONE {
+            if self.source.cycle_layer() {
+                self.refilter();
+                self.load_selected();
+                self.status = format!("source: {}", self.source.title());
+            }
+            return false;
+        }
 
         // vim enter
         if matches!(key.code, KeyCode::Char('/'))
@@ -187,6 +200,7 @@ impl App {
 
     /// Global chords. Returns true = quit.
     fn handle_global(&mut self, key: KeyEvent, ctrl: bool, alt: bool) -> bool {
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
             KeyCode::Char('q') | KeyCode::Char('Q') if ctrl => return true,
             KeyCode::Char('c') | KeyCode::Char('C') if ctrl => return true,
@@ -218,6 +232,12 @@ impl App {
                     }
                     .into();
                 }
+            }
+            #[cfg(feature = "ai")]
+            KeyCode::Char('l') | KeyCode::Char('L') if alt && shift => {
+                self.refresh_ai_context();
+                self.ai.toggle_maximize();
+                self.status = self.ai.status.clone();
             }
             #[cfg(feature = "ai")]
             KeyCode::Char('l') | KeyCode::Char('L') if alt => {

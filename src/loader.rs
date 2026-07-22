@@ -11,6 +11,9 @@ use tuider_plugin_api::{
     FnHandles, FnId, FnLoadBody, FnName, FnOpen, FnStringFree, FnTitle, TUIDER_PLUGIN_ABI,
 };
 
+/// Optional: `extern "C" fn tuider_source_cycle(src: *mut c_void) -> c_int` (1 = cycled).
+type FnCycle = unsafe extern "C" fn(*mut c_void) -> c_int;
+
 pub struct LoadedPlugin {
     #[allow(dead_code)] // kept for skip/debug messages
     pub path: PathBuf,
@@ -25,6 +28,7 @@ pub struct LoadedPlugin {
     entry_at: FnEntryAt,
     load_body: FnLoadBody,
     string_free: FnStringFree,
+    cycle: Option<FnCycle>,
 }
 
 pub struct DynSource {
@@ -62,6 +66,46 @@ impl PluginTextSource for DynSource {
             .into_owned();
         unsafe { (self.plugin.string_free)(raw) };
         Ok(s)
+    }
+}
+
+impl DynSource {
+    fn refresh_meta(&mut self) {
+        let title_ptr = unsafe { (self.plugin.title)(self.handle) };
+        self.title_cache = if title_ptr.is_null() {
+            self.plugin.id.clone()
+        } else {
+            let s = unsafe { CStr::from_ptr(title_ptr) }
+                .to_string_lossy()
+                .into_owned();
+            unsafe { (self.plugin.string_free)(title_ptr) };
+            s
+        };
+        let n = unsafe { (self.plugin.entry_count)(self.handle) };
+        let mut entries = Vec::with_capacity(n);
+        for i in 0..n {
+            let p = unsafe { (self.plugin.entry_at)(self.handle, i) };
+            if p.is_null() {
+                entries.push(format!("#{i}"));
+            } else {
+                let s = unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
+                unsafe { (self.plugin.string_free)(p) };
+                entries.push(s);
+            }
+        }
+        self.entries_cache = entries;
+    }
+
+    fn cycle_layer(&mut self) -> bool {
+        let Some(cycle) = self.plugin.cycle else {
+            return false;
+        };
+        let r = unsafe { cycle(self.handle) };
+        if r == 0 {
+            return false;
+        }
+        self.refresh_meta();
+        true
     }
 }
 
@@ -111,6 +155,14 @@ impl crate::plugin::ContentSource for HostSource {
                 format!("load failed: {e}"),
             ),
         }
+    }
+    fn cycle_layer(&mut self) -> bool {
+        if !self.inner.cycle_layer() {
+            return false;
+        }
+        self.title = self.inner.title_cache.clone();
+        self.names = self.inner.entries_cache.clone();
+        true
     }
 }
 
@@ -240,6 +292,10 @@ fn load_one(path: &Path) -> Result<LoadedPlugin, String> {
             entry_at: *entry_at,
             load_body: *load_body,
             string_free: *string_free,
+            cycle: lib
+                .get::<FnCycle>(b"tuider_source_cycle\0")
+                .ok()
+                .map(|s| *s),
             _lib: lib,
         })
     }

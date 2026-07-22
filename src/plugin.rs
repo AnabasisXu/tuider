@@ -44,6 +44,10 @@ pub trait ContentSource: Send {
     fn entry_path(&self, _index: usize) -> Option<std::path::PathBuf> {
         None
     }
+    /// Multi-dict / layer cycle (plugin optional). Returns true if layer changed.
+    fn cycle_layer(&mut self) -> bool {
+        false
+    }
 }
 
 pub fn ai_compiled() -> bool {

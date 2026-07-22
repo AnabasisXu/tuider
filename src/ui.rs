@@ -43,7 +43,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     #[cfg(feature = "ai")]
     if app.ai_open() {
         app.set_list_area(None);
-        if compact_w {
+        if app.ai().maximized {
+            app.set_content_area(None);
+            app.ai_mut().draw(frame, area, theme);
+        } else if compact_w {
             // narrow: stack content over AI
             let v = Layout::vertical([
                 Constraint::Percentage(45),
@@ -497,6 +500,7 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
             ("v/V", "Visual line select"),
             ("y", "Yank selection (OSC 52)"),
             ("Alt+L", "AI overlay (if built)"),
+            ("Alt+Shift+L", "AI maximize"),
             ("Esc", "Clear filter / visual"),
             ("Ctrl+Q", "Quit"),
             ("?", "Close help"),
