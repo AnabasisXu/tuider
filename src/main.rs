@@ -15,6 +15,7 @@ mod source;
 mod theme;
 mod ui;
 mod pkg;
+mod plugin_catalog;
 
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
@@ -89,7 +90,7 @@ fn run(registry: &PluginRegistry, plugins_dir: &std::path::Path) -> Result<(), E
         if !config::plugin_enabled(&plug.id) {
             continue;
         }
-        if plug.handles_args(&raw) || claim_by_id(plug.id.as_str(), &raw) {
+        if plug.handles_args(&raw) || plugin_catalog::claims(plug.id.as_str(), &raw) {
             match plug.open_from_args(&raw) {
                 Ok(src) => {
                     if list_mode || !io::stdout().is_terminal() {
@@ -109,7 +110,7 @@ fn run(registry: &PluginRegistry, plugins_dir: &std::path::Path) -> Result<(), E
     }
 
     // Explicit plugin flags without .so
-    if let Some(need) = missing_plugin_hint(&raw, registry) {
+    if let Some(need) = plugin_catalog::missing_plugin_hint(&raw, |id| registry.has(id)) {
         eprintln!(
             "tuider: need plugin `{need}` — build and copy .so to:\n  {}\n  (see docs/plugins.md)",
             plugins_dir.display()
@@ -122,41 +123,6 @@ fn run(registry: &PluginRegistry, plugins_dir: &std::path::Path) -> Result<(), E
     }
     open_files(paths, recursive, list_mode)
 }
-
-fn claim_by_id(id: &str, args: &[String]) -> bool {
-    match id {
-        "url" => args.iter().any(|a| {
-            a == "-u" || a == "--url" || a.starts_with("http://") || a.starts_with("https://")
-        }),
-        "hn" => args.iter().any(|a| a == "-hn" || a == "--hn"),
-        "code" => args.iter().any(|a| a == "--code"),
-        "dict" => {
-            args.iter().any(|a| a == "-g" || a == "--group")
-                || args.iter().any(|a| a.ends_with(".mdx") || a.ends_with(".MDX"))
-        }
-        _ => false,
-    }
-}
-
-fn missing_plugin_hint(args: &[String], reg: &PluginRegistry) -> Option<&'static str> {
-    if args.iter().any(|a| a == "-u" || a == "--url" || a.starts_with("http")) && !reg.has("url") {
-        return Some("url");
-    }
-    if args.iter().any(|a| a == "-hn" || a == "--hn") && !reg.has("hn") {
-        return Some("hn");
-    }
-    if args.iter().any(|a| a == "--code") && !reg.has("code") {
-        return Some("code");
-    }
-    if (args.iter().any(|a| a == "-g" || a == "--group")
-        || args.iter().any(|a| a.ends_with(".mdx")))
-        && !reg.has("dict")
-    {
-        return Some("dict");
-    }
-    None
-}
-
 fn open_files(paths: Vec<PathBuf>, recursive: bool, list_mode: bool) -> Result<(), ExitCode> {
     let mut docs = Vec::new();
     for p in &paths {

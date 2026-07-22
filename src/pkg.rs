@@ -6,45 +6,9 @@ use std::process::{Command, ExitCode, Stdio};
 use crate::config;
 use crate::loader::PluginRegistry;
 
-#[derive(Clone, Copy)]
-pub struct CatalogEntry {
-    pub id: &'static str,
-    pub crate_name: &'static str,
-    pub so_name: &'static str,
-    pub summary: &'static str,
-}
+use crate::plugin_catalog::{self, CatalogEntry, CATALOG};
 
-/// Static catalog of shippable plugins (Linux .so names).
-pub const CATALOG: &[CatalogEntry] = &[
-    CatalogEntry {
-        id: "url",
-        crate_name: "tuider-plugin-url",
-        so_name: "libtuider_url.so",
-        summary: "fetch URL → markdown",
-    },
-    CatalogEntry {
-        id: "hn",
-        crate_name: "tuider-plugin-hn",
-        so_name: "libtuider_hn.so",
-        summary: "Hacker News top stories",
-    },
-    CatalogEntry {
-        id: "code",
-        crate_name: "tuider-plugin-code",
-        so_name: "libtuider_code.so",
-        summary: "source file tree",
-    },
-    CatalogEntry {
-        id: "dict",
-        crate_name: "tuider-plugin-dict",
-        so_name: "libtuider_dict.so",
-        summary: "MDX dictionary",
-    },
-];
-
-pub fn find(id: &str) -> Option<&'static CatalogEntry> {
-    CATALOG.iter().find(|e| e.id == id)
-}
+pub use plugin_catalog::find;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
