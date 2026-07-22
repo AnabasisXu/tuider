@@ -1,4 +1,4 @@
-//! Keyboard routing: global → vim → visual → sidebar filter → navigation.
+//! Keyboard routing: Help → Ai → global → Nav → Vim → Visual (fallthrough) → Normal.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -12,17 +12,23 @@ impl App {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
-        if self.show_help {
+        // Capture before handle_global so `?` cannot open Help then re-match Help.
+        let mode = self.input_mode();
+
+        if mode == super::InputMode::Help {
             self.show_help = false;
             return false;
         }
 
         #[cfg(feature = "ai")]
-        if self.ai.is_open() {
+        if mode == super::InputMode::Ai {
             if key.modifiers.contains(KeyModifiers::CONTROL)
                 && matches!(
                     key.code,
-                    KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Char('c') | KeyCode::Char('C')
+                    KeyCode::Char('q')
+                        | KeyCode::Char('Q')
+                        | KeyCode::Char('c')
+                        | KeyCode::Char('C')
                 )
             {
                 return true;
@@ -43,40 +49,33 @@ impl App {
             return true;
         }
 
-        if self.nav_open() {
-            self.handle_nav_key(key);
-            return false;
-        }
-        if matches!(
-            key.code,
-            KeyCode::Char('?')
-                | KeyCode::Char('f')
-                | KeyCode::Char('F')
-                | KeyCode::Char('s')
-                | KeyCode::Char('S')
-                | KeyCode::Char('q')
-                | KeyCode::Char('Q')
-                | KeyCode::Char('c')
-                | KeyCode::Char('C')
-                | KeyCode::Char('l')
-                | KeyCode::Char('L')
-        ) && (ctrl
-            || alt
-            || (key.code == KeyCode::Char('?') && key.modifiers == KeyModifiers::NONE))
-        {
-            // global branch already handled quit/help/toggle; fall through only if unmatched
-        }
-
-        if self.vim_mode {
-            return self.handle_vim_key(key);
-        }
-
-        if self.visual.is_some() {
-            if self.handle_visual_key(key) {
-                return false;
+        match mode {
+            super::InputMode::Help => unreachable!("handled above"),
+            #[cfg(feature = "ai")]
+            super::InputMode::Ai => unreachable!("handled above"),
+            super::InputMode::Nav => {
+                self.handle_nav_key(key);
+                false
             }
+            super::InputMode::VimSearch => self.handle_vim_key(key),
+            super::InputMode::Visual => {
+                if self.handle_visual_key(key) {
+                    return false;
+                }
+                // fall through like before: unmatched visual keys hit normal paths
+                self.handle_normal_key(key, ctrl, alt, shift)
+            }
+            super::InputMode::Normal => self.handle_normal_key(key, ctrl, alt, shift),
         }
+    }
 
+    fn handle_normal_key(
+        &mut self,
+        key: KeyEvent,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+    ) -> bool {
         // start visual: v = char, V = line
         if key.modifiers == KeyModifiers::NONE
             && self.filter.is_empty()
@@ -95,7 +94,6 @@ impl App {
                 _ => {}
             }
         }
-
 
         // mdterm: f links, o outline, Alt+f consult
         if self.visual.is_none() && self.filter.is_empty() {
@@ -185,6 +183,7 @@ impl App {
         self.handle_nav(key, alt, ctrl, shift, sidebar);
         false
     }
+
 
     /// Global chords. Returns true = quit.
     fn handle_global(&mut self, key: KeyEvent, ctrl: bool, alt: bool) -> bool {

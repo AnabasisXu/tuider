@@ -3,6 +3,9 @@
 //! Key handling / vim search / visual live in submodules (P1 split).
 
 mod keys;
+mod mode;
+pub use mode::InputMode;
+
 pub(crate) mod nav;
 mod search;
 mod visual;
@@ -130,6 +133,17 @@ impl App {
     }
 
     // ── ui accessors ──────────────────────────────────────────────────────
+    pub(crate) fn input_mode(&self) -> mode::InputMode {
+        mode::derive_input_mode(
+            self.show_help,
+            #[cfg(feature = "ai")]
+            self.ai.is_open(),
+            self.nav_open(),
+            self.vim_mode,
+            self.visual.is_some(),
+        )
+    }
+
 
     pub fn theme(&self) -> Theme {
         self.theme
