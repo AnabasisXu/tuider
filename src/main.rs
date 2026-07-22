@@ -3,7 +3,6 @@
 #[cfg(feature = "ai")]
 mod ai;
 mod app;
-mod cache;
 mod config;
 mod loader;
 mod html_css;
