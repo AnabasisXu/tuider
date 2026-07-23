@@ -87,9 +87,10 @@ fn run(registry: &PluginRegistry, plugins_dir: &std::path::Path) -> Result<(), E
             "-r" | "--recursive" => recursive = true,
             "-l" | "--list" | "--print" | "--lite" => list_mode = true,
             "--html" => cli_html = true,
-            "--db" => {}
+            "--db" | "--sync" => {}
             // plugin flags (+ their values): leave for plugin open
             "-u" | "--url" | "-hn" | "--hn" | "-g" | "--group" | "-s" | "--search" | "-n"
+
             | "--limit" | "--code" | "-m" | "-w" => {
                 if matches!(
                     a.as_str(),
@@ -416,6 +417,8 @@ CORE OPTIONS:
     -W                list configured wordlists
     --html            CLI: raw HTML definitions
     --db              export each .mdx to sibling .db (no TUI)
+    --sync            with -hn: also prefetch article bodies (first 3)
+
     -h, --help
     -V, --version
 
