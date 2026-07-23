@@ -1,22 +1,22 @@
 # Tuider 现状（权威快照）
 
 目录：`~/cleantest/tuider`  
-日期：2026-07-22（host-boundary 清债后）
+日期：2026-07-23（code 并入 core）
 
 ## 加载机制
 
-1. 主二进制**不链接** url/hn/dict/code 业务代码。
+1. 主二进制**不链接** url/hn/dict 业务代码；**code 高亮在 core**（`src/code.rs` + syntect）。
 2. 启动扫描 `plugins_dir`（默认 `~/.local/share/tuider/plugins`）。
 3. 目录内 `.so` 经 **`dlopen`**（`src/loader.rs`）加载；无文件则无对应 CLI。
 4. **`src/plugin_catalog.rs`** 是发行侧插件**单一知识源**：id / so 名 / summary / `claims` / `missing_plugin_hint`；`pkg` 与 `main` 只消费它。
-5. 认领顺序：`handles_args` **或** catalog `claims(id)`；缺 so 时 catalog 按 url→hn→code→dict 给 `need plugin …` 提示。
+5. 认领顺序：`handles_args` **或** catalog `claims(id)`；缺 so 时 catalog 按 url→hn→dict 给 `need plugin …` 提示。
 6. yml `plugins.*.enabled: false` 可再挡一层；**不能代替「无文件」**。
 7. **无 host `cache` 模块**（已删）；网络/磁盘缓存由各插件自管。**HN 默认 cache-only**，`--sync` 才联网。
 
 已验证：
 
-- 空目录 + `-u` / `--code` / `.mdx` → `need plugin … — copy .so`
-- `libtuider_code.so` + `--code -l src/main.rs` → 列出 `main.rs`
+- 空目录 + `-u` / `.mdx` → `need plugin … — copy .so`
+- 无 so：`cargo run -- -l src/main.rs` → 列出 `main.rs`（core code）
 - `libtuider_dict.so` + `-l some.mdx` → 词条列表
 - `libtuider_url.so` + `-l -u https://example.com` → Example Domain
 - help 列出 `LOADED PLUGINS`
@@ -27,6 +27,7 @@
 - C ABI 仍为 **`TUIDER_PLUGIN_ABI = 1`**（未 bump）。
 - Body 可选信封：`BODY_HTML_V1_PREFIX`（`"TUIDER_HTML_V1\n"`）+ `css` + `"\n\u{1e}\n"` + `html`；host 做 CSS 子集 → Lines。
 - API 侧文本源 trait：`PluginTextSource`；host App 侧仍为 `ContentSource`（已渲染 Lines）。
+- Core code 文件同样产出 `TUIDER_HTML_V1` 再经 `loader::render_plugin_body_doc`。
 
 ## App 输入
 
@@ -35,12 +36,11 @@
 ## 包结构
 
 ```
-src/           本体（md/txt/ai/loader/plugin_catalog/…）
+src/           本体（md/txt/code/ai/loader/plugin_catalog/…）
 crates/
   tuider-plugin-api/     ABI v1 + PluginTextSource + BODY_HTML_V1_PREFIX
   tuider-plugin-url/     → libtuider_url.so
   tuider-plugin-hn/      → libtuider_hn.so
-  tuider-plugin-code/    → libtuider_code.so
   tuider-plugin-dict/    → libtuider_dict.so
 ```
 

@@ -1,9 +1,11 @@
 //! Local document source (md/txt/mdx/scripts via scan::is_doc).
+//! Code-like files use core syntect highlight → HTML body (same as old code plugin).
 
 use std::path::{Path, PathBuf};
 
 use ratatui::text::Line;
 
+use crate::code;
 use crate::md;
 use crate::plugin::{ContentSource, LoadResult};
 
@@ -76,21 +78,28 @@ impl ContentSource for FileTreeSource {
                 );
             }
         };
-        let is_md = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("md"));
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let is_md = ext.eq_ignore_ascii_case("md");
+        let w = width.max(20);
         if is_md {
-            let doc = md::render_md_doc(&text, width.max(20));
+            let doc = md::render_md_doc(&text, w);
             LoadResult {
                 status: format!("{name}  ({} lines)", doc.lines.len()),
                 lines: doc.lines,
                 links: doc.links,
                 headings: doc.headings,
             }
+        } else if crate::scan::is_code_ext(ext) {
+            let body = code::highlight_body(path, &text);
+            let (lines, links, headings) = crate::loader::render_plugin_body_doc(&body, w);
+            LoadResult {
+                status: format!("{name}  ({} lines)", lines.len()),
+                lines,
+                links,
+                headings,
+            }
         } else {
-            // code-like / plain: host outline scanner lives in loader; reuse via md lines
-            let lines = md::render_txt_width(&text, width.max(20));
+            let lines = md::render_txt_width(&text, w);
             let headings = crate::loader::outline_from_plain_lines(&lines);
             LoadResult {
                 lines,

@@ -51,11 +51,15 @@ pub fn is_doc(path: &Path) -> bool {
             e.eq_ignore_ascii_case("md")
                 || e.eq_ignore_ascii_case("txt")
                 || e.eq_ignore_ascii_case("mdx")
-                || CODE_EXTS.iter().any(|x| e.eq_ignore_ascii_case(x))
+                || is_code_ext(e)
         })
 }
 
-// keep in sync with plugin_catalog CODE_EXTS
+/// Source / script extensions highlighted by core `code` module.
+pub fn is_code_ext(ext: &str) -> bool {
+    CODE_EXTS.iter().any(|x| ext.eq_ignore_ascii_case(x))
+}
+
 const CODE_EXTS: &[&str] = &[
     "rs", "py", "go", "js", "ts", "tsx", "jsx", "c", "h", "cpp", "hpp", "java", "kt", "swift",
     "rb", "php", "cs", "sh", "bash", "zsh", "fish", "toml", "yaml", "yml", "json", "html", "css",

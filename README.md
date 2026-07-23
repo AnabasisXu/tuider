@@ -14,6 +14,7 @@
 | [docs/STATUS.md](docs/STATUS.md) | 现状 |
 | [docs/NEXT.md](docs/NEXT.md) | 下一步 |
 | [docs/plugins.md](docs/plugins.md) | **动态插件加载** |
+| [docs/compare/MATRIX.md](docs/compare/MATRIX.md) | **vs mdx-tui 功能矩阵** + [smoke](docs/compare/README.md) |
 | [docs/complexity-review.md](docs/complexity-review.md) | 复杂度 |
 | [docs/PLAN.md](docs/PLAN.md) | 决策 |
 | [docs/refactor-design-and-planning.md](docs/refactor-design-and-planning.md) | mdx-tui→Tuider 重构方法与规划 |
@@ -48,16 +49,15 @@ TUIDER_PLUGINS_DIR=/tmp/empty cargo run -- -u https://example.com
 |--------|------------------|
 | `tuider-plugin-url` | `libtuider_url.so` |
 | `tuider-plugin-hn` | `libtuider_hn.so` |
-| `tuider-plugin-code` | `libtuider_code.so` |
 | `tuider-plugin-dict` | `libtuider_dict.so` |
 
 ## Core vs 插件
 
 | Core（在 bin 内） | 插件（仅 .so） |
 |-------------------|----------------|
-| md/txt TUI | url |
+| md/txt + **code 高亮**（syntect） | url |
 | AI（default feature） | hn |
-| vim / visual yank | dict / code |
+| vim / visual yank | dict |
 
 ## 配置
 

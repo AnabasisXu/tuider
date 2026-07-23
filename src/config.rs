@@ -45,7 +45,9 @@ pub struct PluginsSection {
     pub url: Option<UrlPluginCfg>,
     pub hn: Option<HnPluginCfg>,
     pub dict: Option<DictPluginCfg>,
-    pub code: Option<CodePluginCfg>,
+    /// Legacy yml key; ignored (code is core).
+    #[serde(default)]
+    pub code: Option<serde_yaml::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -54,7 +56,6 @@ pub struct UrlPluginCfg {
     pub enabled: Option<bool>,
     #[serde(default = "default_true")]
     pub cache: bool,
-
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -63,7 +64,6 @@ pub struct HnPluginCfg {
     pub enabled: Option<bool>,
     pub default_limit: Option<usize>,
     pub comments: Option<usize>,
-
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -71,16 +71,6 @@ pub struct HnPluginCfg {
 pub struct DictPluginCfg {
     pub enabled: Option<bool>,
     pub default_group: Option<String>,
-
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[allow(dead_code)]
-pub struct CodePluginCfg {
-    pub enabled: Option<bool>,
-    #[serde(default)]
-    pub recursive: bool,
-
 }
 
 fn default_true() -> bool {
@@ -88,9 +78,9 @@ fn default_true() -> bool {
 }
 
 /// Whether a plugin may load at runtime.
-/// - missing `plugins` section → all compiled plugins allowed
+/// - missing `plugins` section → all plugins allowed
 /// - missing plugin key → allowed
-/// - `enabled: false` → blocked even if Cargo feature is on
+/// - `enabled: false` → blocked
 pub fn plugin_enabled(id: &str) -> bool {
     let Some((_, cfg)) = load() else {
         return true;
@@ -102,7 +92,6 @@ pub fn plugin_enabled(id: &str) -> bool {
         "url" => plugins.url.and_then(|u| u.enabled),
         "hn" => plugins.hn.and_then(|h| h.enabled),
         "dict" => plugins.dict.and_then(|d| d.enabled),
-        "code" => plugins.code.and_then(|c| c.enabled),
         _ => None,
     };
     en.unwrap_or(true)

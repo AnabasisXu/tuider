@@ -4,7 +4,6 @@ members = [
     "crates/tuider-plugin-api",
     "crates/tuider-plugin-url",
     "crates/tuider-plugin-hn",
-    "crates/tuider-plugin-code",
     "crates/tuider-plugin-dict",
 ]
 resolver = "2"
@@ -24,7 +23,7 @@ ai = ["dep:reqwest", "dep:serde_json"]
 url = []
 hn = []
 dict = []
-code = []
+code = [] # no-op; code reading is built into core
 full = ["ai"]
 
 [[bin]]
@@ -42,4 +41,5 @@ pulldown-cmark = { version = "0.11", default-features = false, features = ["html
 unicode-width = "0.2"
 base64 = "0.22"
 libloading = "0.8"
+syntect = "5"
 tuider-plugin-api = { path = "crates/tuider-plugin-api" }

@@ -21,33 +21,14 @@ fn claims_hn(args: &[String]) -> bool {
     args.iter().any(|a| a == "-hn" || a == "--hn")
 }
 
-/// Same extension set as `tuider-plugin-code` `EXTS` (keep in sync).
-const CODE_EXTS: &[&str] = &[
-    "rs", "py", "go", "js", "ts", "tsx", "jsx", "c", "h", "cpp", "hpp", "java", "kt", "swift",
-    "rb", "php", "cs", "sh", "bash", "zsh", "fish", "toml", "yaml", "yml", "json", "html", "css",
-    "sql", "lua", "vim", "zig",
-];
-
-fn looks_like_code_path(a: &str) -> bool {
-    std::path::Path::new(a)
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| CODE_EXTS.iter().any(|x| e.eq_ignore_ascii_case(x)))
-}
-
-fn claims_code(args: &[String]) -> bool {
-    // --code, or bare path with known source ext (dict-style), incl. missing files for hints
-    args.iter()
-        .any(|a| a == "--code" || looks_like_code_path(a))
-}
-
 fn claims_dict(args: &[String]) -> bool {
     args.iter().any(|a| a == "-g" || a == "--group")
         || args.iter().any(|a| a.ends_with(".mdx") || a.ends_with(".MDX"))
     // -s alone does not claim; needs -g or .mdx
 }
 
-/// Static catalog (order = missing-hint priority: url → hn → code → dict).
+/// Static catalog (order = missing-hint priority: url → hn → dict).
+/// Code reading is built into core (not a plugin).
 pub const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         id: "url",
@@ -62,13 +43,6 @@ pub const CATALOG: &[CatalogEntry] = &[
         so_name: "libtuider_hn.so",
         summary: "Hacker News top stories",
         claims: claims_hn,
-    },
-    CatalogEntry {
-        id: "code",
-        crate_name: "tuider-plugin-code",
-        so_name: "libtuider_code.so",
-        summary: "source file tree",
-        claims: claims_code,
     },
     CatalogEntry {
         id: "dict",
@@ -120,22 +94,16 @@ mod tests {
     }
 
     #[test]
-    fn claims_hn_code_dict() {
+    fn claims_hn_dict() {
         assert!(claims("hn", &s(&["-hn"])));
         assert!(claims("hn", &s(&["--hn"])));
         assert!(!claims("hn", &s(&["-u"])));
-        assert!(claims("code", &s(&["--code", "src"])));
-        assert!(!claims("code", &s(&["-c"])));
-        assert!(claims("code", &s(&["src/ai.rs"])));
-        assert!(claims("code", &s(&["Foo.RS"])));
-        assert!(claims("code", &s(&["lib.py"])));
-        assert!(!claims("code", &s(&["README.md"])));
-        assert!(!claims("code", &s(&["notes.txt"])));
         assert!(claims("dict", &s(&["-g", "en"])));
         assert!(claims("dict", &s(&["--group", "en"])));
         assert!(claims("dict", &s(&["foo.mdx"])));
         assert!(claims("dict", &s(&["FOO.MDX"])));
         assert!(!claims("dict", &s(&["foo.md"])));
+        assert!(!claims("dict", &s(&["src/ai.rs"])));
     }
 
     #[test]
@@ -146,8 +114,9 @@ mod tests {
             Some("url")
         );
         assert_eq!(missing_plugin_hint(&s(&["-hn"]), none), Some("hn"));
-        assert_eq!(missing_plugin_hint(&s(&["--code"]), none), Some("code"));
-        assert_eq!(missing_plugin_hint(&s(&["src/ai.rs"]), none), Some("code"));
+        // code is core — no missing-plugin hint
+        assert_eq!(missing_plugin_hint(&s(&["--code"]), none), None);
+        assert_eq!(missing_plugin_hint(&s(&["src/ai.rs"]), none), None);
         // url claims first when both present
         assert_eq!(
             missing_plugin_hint(&s(&["-hn", "-u"]), none),

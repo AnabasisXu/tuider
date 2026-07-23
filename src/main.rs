@@ -3,6 +3,7 @@
 #[cfg(feature = "ai")]
 mod ai;
 mod app;
+mod code;
 mod config;
 mod loader;
 mod html_css;
@@ -87,11 +88,10 @@ fn run(registry: &PluginRegistry, plugins_dir: &std::path::Path) -> Result<(), E
             "-r" | "--recursive" => recursive = true,
             "-l" | "--list" | "--print" | "--lite" => list_mode = true,
             "--html" => cli_html = true,
-            "--db" | "--sync" => {}
+            "--db" | "--sync" | "--code" => {}
             // plugin flags (+ their values): leave for plugin open
             "-u" | "--url" | "-hn" | "--hn" | "-g" | "--group" | "-s" | "--search" | "-n"
-
-            | "--limit" | "--code" | "-m" | "-w" => {
+            | "--limit" | "-m" | "-w" => {
                 if matches!(
                     a.as_str(),
                     "-u" | "--url"

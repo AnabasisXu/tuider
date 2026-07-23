@@ -364,7 +364,7 @@ fn html_to_rough_plain(html: &str) -> String {
 }
 
 
-fn render_plugin_body_doc(
+pub fn render_plugin_body_doc(
     text: &str,
     width: usize,
 ) -> (

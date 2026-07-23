@@ -19,20 +19,19 @@ esac
 PACKAGES=(
   tuider-plugin-url
   tuider-plugin-hn
-  tuider-plugin-code
   tuider-plugin-dict
 )
 
 echo "building plugins ($PROFILE)…"
 if [[ "$PROFILE" == "release" ]]; then
-  cargo build --release -p tuider-plugin-url -p tuider-plugin-hn -p tuider-plugin-code -p tuider-plugin-dict
+  cargo build --release -p tuider-plugin-url -p tuider-plugin-hn -p tuider-plugin-dict
 else
-  cargo build -p tuider-plugin-url -p tuider-plugin-hn -p tuider-plugin-code -p tuider-plugin-dict
+  cargo build -p tuider-plugin-url -p tuider-plugin-hn -p tuider-plugin-dict
 fi
 
 mkdir -p "$DEST"
 TARGET_DIR="target/$PROFILE"
-for so in libtuider_url.so libtuider_hn.so libtuider_code.so libtuider_dict.so; do
+for so in libtuider_url.so libtuider_hn.so libtuider_dict.so; do
   src="$TARGET_DIR/$so"
   if [[ -f "$src" ]]; then
     cp -f "$src" "$DEST/"

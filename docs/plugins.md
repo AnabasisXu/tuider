@@ -4,8 +4,8 @@
 
 | 要求 | 实现 |
 |------|------|
-| 本体尽量小 | 主包 **不再静态链接** url/hn/dict/code |
-| 拷贝插件文件才能用 | 只有 `plugins_dir` 里存在对应 `.so` 才能 `-u`/`-hn`/… |
+| 本体尽量小 | 主包 **不再静态链接** url/hn/dict；**code 在 core**（syntect） |
+| 拷贝插件文件才能用 | 只有 `plugins_dir` 里存在对应 `.so` 才能 `-u`/`-hn`/dict… |
 | 独立包 | `crates/tuider-plugin-*` 编成 **cdylib** |
 | 发行知识单源 | host `src/plugin_catalog.rs`：claims / 缺 so 提示 / `pkg` |
 
@@ -26,7 +26,7 @@
 - `pkg list|install|remove`：同一 `CATALOG`（id / crate / so / summary）
 - **无**第二份 id→flag `match`
 
-claims 语义（冻结）：url（`-u`/`--url`/裸 http(s)）、hn（`-hn`/`--hn`）、code（`--code`）、dict（`-g`/`--group`/`.mdx`）。
+claims 语义：url（`-u`/`--url`/裸 http(s)）、hn（`-hn`/`--hn`）、dict（`-g`/`--group`/`.mdx`）。code 已并入 core，不再 claims 插件。
 
 ## 构建与安装
 
@@ -114,7 +114,7 @@ API 侧适配后文本源 trait 名：`PluginTextSource`。App 侧已渲染源�
 - [x] `plugin_catalog` + `pkg` 同源
 - [x] `tuider-plugin-url` → `libtuider_url.so`
 - [x] `tuider-plugin-hn` → `libtuider_hn.so`
-- [x] `tuider-plugin-code` → `libtuider_code.so`
+- [x] code 高亮并入 core（`src/code.rs` + syntect；无 so）
 - [x] `tuider-plugin-dict` → `libtuider_dict.so`
 - [x] `BODY_HTML_V1_PREFIX` + host 渲染
 - [x] 帮助列出已加载插件与 plugins 目录
