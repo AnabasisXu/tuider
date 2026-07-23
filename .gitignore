@@ -35,3 +35,7 @@ tuider.yml
 
 # Compare workflow run artifacts
 /docs/compare/runs/
+
+# Session scratch / chat exports (local only)
+.scratch/
+tuider-chat-*.md
