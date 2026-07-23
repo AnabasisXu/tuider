@@ -396,7 +396,7 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
             Line::from(vec![key("    Ctrl+S   "), desc("搜索布局：左侧 / 顶部")]),
             Line::from(vec![key("    /        "), desc("正文 vim 搜索（侧栏关）")]),
             Line::from(vec![key("    n / N    "), desc("下一/上一匹配")]),
-            Line::from(vec![key("    v / V    "), desc("字符/行 visual · y 复制")]),
+            Line::from(vec![key("    v / V    "), desc("光标/行 visual · vv 选字 · y 复制")]),
             Line::from(vec![key("    f / o    "), desc("链接 / 大纲（侧栏关）")]),
             Line::from(vec![key("    Alt+f    "), desc("consult 空格多词过滤跳转")]),
             Line::from(vec![key("    O        "), desc("打开目录（侧栏关）")]),
@@ -415,6 +415,7 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
     let q = app.vim_query();
     let line_vis = app.visual_line_range();
     let char_vis = app.visual_char_sel();
+    let cursor_cell = app.visual_cursor_cell();
     let current = app.current_match();
     let rendered: Vec<Line> = lines
         .iter()
@@ -439,6 +440,10 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
                 if i >= sel.a_line && i <= sel.b_line {
                     line = paint_char_visual(line, i, &sel, theme);
                 }
+            } else if let Some((cl, cc)) = cursor_cell {
+                if i == cl {
+                    line = paint_cursor_cell(line, cc, theme);
+                }
             }
             line
         })
@@ -448,6 +453,43 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(rendered).scroll((scroll, 0)),
         inner,
     );
+}
+
+fn paint_cursor_cell(line: Line<'static>, col: usize, theme: Theme) -> Line<'static> {
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let caret = Style::default()
+        .fg(theme.status_focus_fg())
+        .bg(theme.search_text());
+    let plain = Style::default().fg(theme.list_text());
+    if n == 0 || col >= n {
+        // empty line or after last char: reverse space caret
+        let mut spans = Vec::new();
+        if n > 0 {
+            spans.push(Span::styled(chars.iter().collect::<String>(), plain));
+        }
+        spans.push(Span::styled(" ", caret));
+        return Line::from(spans);
+    }
+    let mut spans = Vec::new();
+    if col > 0 {
+        spans.push(Span::styled(
+            chars[..col].iter().collect::<String>(),
+            plain,
+        ));
+    }
+    spans.push(Span::styled(
+        chars[col..=col].iter().collect::<String>(),
+        caret,
+    ));
+    if col + 1 < n {
+        spans.push(Span::styled(
+            chars[col + 1..].iter().collect::<String>(),
+            plain,
+        ));
+    }
+    Line::from(spans)
 }
 
 fn paint_char_visual(
@@ -627,7 +669,7 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
             ("/", "In-content search"),
             ("[/]", "Prev/next major section"),
             ("o", "Outline / filter headings"),
-            ("v/V", "Visual select"),
+            ("v/V", "Cursor / line visual (vv=char)"),
             ("y", "Yank selection (OSC 52)"),
             ("Alt+L", "AI overlay (if built)"),
             ("Alt+Shift+L", "AI maximize"),

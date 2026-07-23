@@ -72,6 +72,8 @@ pub struct App {
     /// Dict picker (Ctrl+B). Closed = None; open holds selection index into names cache.
     pub(crate) dict_panel: Option<usize>,
     pub(crate) dict_panel_names: Vec<String>,
+    /// gg pending (visual/cursor motion).
+    pub(crate) pending_g: bool,
 }
 
 impl App {
@@ -106,6 +108,7 @@ impl App {
             loaded_doc: None,
             dict_panel: None,
             dict_panel_names: Vec::new(),
+            pending_g: false,
         };
         app.refilter();
         if app.filtered.is_empty() {
@@ -570,6 +573,7 @@ impl App {
         self.status = result.status;
         self.loaded_doc = Some(di);
         self.visual = None;
+        self.pending_g = false;
         self.nav.overlay = None;
         if !self.vim_query.is_empty() {
             self.vim_match_idx = 0;

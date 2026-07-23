@@ -1,4 +1,4 @@
-//! Visual selection: line (`V`) and char (`v`) + OSC 52 yank.
+//! Visual selection: cursor (`v`), char (second `v`), line (`V`) + OSC 52 yank.
 
 use ratatui::text::Line;
 
@@ -6,6 +6,7 @@ use super::App;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VisualKind {
+    Cursor,
     Line,
     Char,
 }
@@ -28,6 +29,15 @@ impl VisualSel {
                 a_col: 0,
                 b_line: self.a_line.max(self.b_line),
                 b_col: 0,
+            };
+        }
+        if self.kind == VisualKind::Cursor {
+            return Self {
+                kind: VisualKind::Cursor,
+                a_line: self.b_line,
+                a_col: self.b_col,
+                b_line: self.b_line,
+                b_col: self.b_col,
             };
         }
         let (al, ac, bl, bc) = if (self.a_line, self.a_col) <= (self.b_line, self.b_col) {
@@ -99,11 +109,122 @@ pub fn selected_plain_char(body: &[Line<'static>], sel: &VisualSel) -> String {
     out
 }
 
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Next word start on `chars` after `col`, or `None` if none remain on this line.
+fn word_fwd_col(chars: &[char], col: usize) -> Option<usize> {
+    let n = chars.len();
+    let mut i = col.min(n);
+    if i >= n {
+        return None;
+    }
+    if is_word_char(chars[i]) {
+        while i < n && is_word_char(chars[i]) {
+            i += 1;
+        }
+    } else {
+        while i < n && !is_word_char(chars[i]) {
+            i += 1;
+        }
+    }
+    while i < n && !is_word_char(chars[i]) {
+        i += 1;
+    }
+    if i < n {
+        Some(i)
+    } else {
+        None
+    }
+}
+
+/// Previous word start on `chars` at/before `col`.
+fn word_bwd_col(chars: &[char], col: usize) -> Option<usize> {
+    let n = chars.len();
+    if n == 0 {
+        return None;
+    }
+    let mut i = col.min(n);
+    if i == 0 {
+        return None;
+    }
+    i -= 1;
+    while i > 0 && !is_word_char(chars[i]) {
+        i -= 1;
+    }
+    if !is_word_char(chars[i]) {
+        return None;
+    }
+    while i > 0 && is_word_char(chars[i - 1]) {
+        i -= 1;
+    }
+    Some(i)
+}
+
+/// Last word start on a line, or 0 if no word chars.
+fn last_word_start(chars: &[char]) -> usize {
+    word_bwd_col(chars, chars.len()).unwrap_or(0)
+}
+
+/// First word start on a line, or 0.
+fn first_word_start(chars: &[char]) -> usize {
+    let n = chars.len();
+    let mut i = 0;
+    while i < n && !is_word_char(chars[i]) {
+        i += 1;
+    }
+    if i < n {
+        i
+    } else {
+        0
+    }
+}
+
+/// Inclusive end of current/next word from `col`.
+fn word_end_col(chars: &[char], col: usize) -> Option<usize> {
+    let n = chars.len();
+    if n == 0 {
+        return None;
+    }
+    let mut i = col.min(n);
+    if i >= n {
+        return None;
+    }
+    // if on word char, stay; else skip non-word to next word
+    if !is_word_char(chars[i]) {
+        while i < n && !is_word_char(chars[i]) {
+            i += 1;
+        }
+        if i >= n {
+            return None;
+        }
+    } else if i + 1 < n && is_word_char(chars[i + 1]) {
+        // already mid-word: advance to its end (if at end already, go next)
+        i += 1;
+    } else if i + 1 >= n || !is_word_char(chars[i + 1]) {
+        // at end of word → next word end
+        i += 1;
+        while i < n && !is_word_char(chars[i]) {
+            i += 1;
+        }
+        if i >= n {
+            return None;
+        }
+    }
+    while i + 1 < n && is_word_char(chars[i + 1]) {
+        i += 1;
+    }
+    Some(i)
+}
+
 impl App {
     pub(crate) fn start_visual(&mut self, kind: VisualKind) {
         if self.body.is_empty() {
             return;
         }
+        self.pending_g = false;
+        // viewport top (scroll); not mid-screen ghost from prior scroll-only keys
         let line = self.caret_line();
         let col = 0;
         self.visual = Some(VisualSel {
@@ -118,9 +239,123 @@ impl App {
             },
         });
         self.status = match kind {
-            VisualKind::Line => "VISUAL LINE — j/k · y yank · Esc".into(),
-            VisualKind::Char => "VISUAL — hjkl · y yank · Esc".into(),
+            VisualKind::Cursor => "CURSOR — hjkl bw e EB 0$ ^ gg G HML C-d/u · v · Esc".into(),
+            VisualKind::Line => "VISUAL LINE — jk gg G HML C-d/u · y · Esc".into(),
+            VisualKind::Char => "VISUAL — hjkl bw e EB 0$ ^ gg G HML · y · Esc".into(),
         };
+    }
+
+    fn content_view_h(&self) -> usize {
+        self.content_area
+            .map(|a| a.height.saturating_sub(1) as usize)
+            .unwrap_or(20)
+            .max(1)
+    }
+
+    /// Move caret/end (b_*) — Cursor also moves anchor.
+    pub(crate) fn visual_set_pos(&mut self, line: usize, col: usize) {
+        if self.body.is_empty() {
+            return;
+        }
+        let max = self.body.len() - 1;
+        let line = line.min(max);
+        let col = col.min(self.line_len(line));
+        let Some(v) = self.visual.as_mut() else {
+            return;
+        };
+        v.b_line = line;
+        if matches!(v.kind, VisualKind::Char | VisualKind::Cursor) {
+            v.b_col = col;
+        } else {
+            v.b_col = 0;
+        }
+        if v.kind == VisualKind::Cursor {
+            v.a_line = line;
+            v.a_col = v.b_col;
+        }
+        let line = v.b_line;
+        self.ensure_line_visible(line);
+    }
+
+    pub(crate) fn visual_goto_line(&mut self, line: usize) {
+        let col = self
+            .visual
+            .map(|v| {
+                if matches!(v.kind, VisualKind::Char | VisualKind::Cursor) {
+                    v.b_col
+                } else {
+                    0
+                }
+            })
+            .unwrap_or(0);
+        self.visual_set_pos(line, col);
+    }
+
+    /// H / M / L — top / mid / bottom of viewport.
+    pub(crate) fn visual_goto_viewport(&mut self, where_: char) {
+        if self.body.is_empty() {
+            return;
+        }
+        let max = self.body.len() - 1;
+        let h = self.content_view_h();
+        let top = self.scroll as usize;
+        let bot = top.saturating_add(h.saturating_sub(1)).min(max);
+        let line = match where_ {
+            'H' => top,
+            'L' => bot,
+            _ => top + (bot.saturating_sub(top)) / 2, // M
+        };
+        self.visual_goto_line(line);
+    }
+
+    pub(crate) fn visual_page(&mut self, forward: bool, half: bool) {
+        let h = self.content_view_h();
+        let step = if half { (h / 2).max(1) } else { h.max(1) } as isize;
+        let delta = if forward { step } else { -step };
+        let Some(v) = self.visual else {
+            return;
+        };
+        let max = self.body.len().saturating_sub(1) as isize;
+        let next = (v.b_line as isize + delta).clamp(0, max) as usize;
+        self.visual_goto_line(next);
+    }
+
+    /// e — end of word (alnum/_).
+    pub(crate) fn visual_extend_word_end(&mut self) {
+        let Some(v) = self.visual else {
+            return;
+        };
+        if !matches!(v.kind, VisualKind::Char | VisualKind::Cursor) || self.body.is_empty() {
+            return;
+        }
+        let (nl, nc) = self.word_end_pos(v.b_line, v.b_col);
+        self.visual_set_pos(nl, nc);
+    }
+
+    /// ^ — first non-blank on line.
+    pub(crate) fn visual_first_nonblank(&mut self) {
+        let Some(v) = self.visual else {
+            return;
+        };
+        if !matches!(v.kind, VisualKind::Char | VisualKind::Cursor) || self.body.is_empty() {
+            return;
+        }
+        let line = v.b_line.min(self.body.len().saturating_sub(1));
+        let chars: Vec<char> = Self::line_plain(&self.body[line]).chars().collect();
+        let mut i = 0;
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        self.visual_set_pos(line, i.min(chars.len()));
+    }
+
+    /// Single-cell caret for Cursor mode paint.
+    pub fn visual_cursor_cell(&self) -> Option<(usize, usize)> {
+        let v = self.visual.as_ref()?;
+        if v.kind != VisualKind::Cursor {
+            return None;
+        }
+        Some((v.b_line, v.b_col))
     }
 
     pub(crate) fn visual_extend_line(&mut self, delta: isize) {
@@ -132,15 +367,19 @@ impl App {
         }
         let max = self.body.len() - 1;
         let next = (v.b_line as isize + delta).clamp(0, max as isize) as usize;
-        let col = if v.kind == VisualKind::Char {
+        let col = if matches!(v.kind, VisualKind::Char | VisualKind::Cursor) {
             v.b_col.min(self.line_len(next))
         } else {
             0
         };
         if let Some(v) = self.visual.as_mut() {
             v.b_line = next;
-            if v.kind == VisualKind::Char {
+            if matches!(v.kind, VisualKind::Char | VisualKind::Cursor) {
                 v.b_col = col;
+            }
+            if v.kind == VisualKind::Cursor {
+                v.a_line = next;
+                v.a_col = col;
             }
         }
         self.ensure_line_visible(next);
@@ -150,16 +389,166 @@ impl App {
         let Some(v) = self.visual else {
             return;
         };
-        if v.kind != VisualKind::Char || self.body.is_empty() {
+        if !matches!(v.kind, VisualKind::Char | VisualKind::Cursor) || self.body.is_empty() {
             return;
         }
-        let len = self.line_len(v.b_line);
-        let next = (v.b_col as isize + delta).clamp(0, len as isize) as usize;
-        let line = v.b_line;
+        let max = self.body.len() - 1;
+        let mut line = v.b_line.min(max);
+        let mut col = v.b_col as isize + delta;
+        let mut len = self.line_len(line) as isize;
+        // wrap across lines when past ends (col may be == len = after last char)
+        while col < 0 {
+            if line == 0 {
+                col = 0;
+                break;
+            }
+            line -= 1;
+            len = self.line_len(line) as isize;
+            col = len + col + 1; // -1 from next start → prev EOL
+        }
+        while col > len {
+            if line >= max {
+                col = len;
+                break;
+            }
+            col -= len + 1; // leave EOL → next BOL
+            line += 1;
+            len = self.line_len(line) as isize;
+        }
+        let col = col.clamp(0, len) as usize;
         if let Some(v) = self.visual.as_mut() {
-            v.b_col = next;
+            v.b_line = line;
+            v.b_col = col;
+            if v.kind == VisualKind::Cursor {
+                v.a_line = line;
+                v.a_col = col;
+            }
         }
         self.ensure_line_visible(line);
+    }
+
+    /// E → line end (col = len); B → line start (col = 0).
+    pub(crate) fn visual_extend_line_edge(&mut self, to_end: bool) {
+        let Some(v) = self.visual else {
+            return;
+        };
+        if !matches!(v.kind, VisualKind::Char | VisualKind::Cursor) || self.body.is_empty() {
+            return;
+        }
+        let line = v.b_line.min(self.body.len().saturating_sub(1));
+        let col = if to_end { self.line_len(line) } else { 0 };
+        if let Some(v) = self.visual.as_mut() {
+            v.b_line = line;
+            v.b_col = col;
+            if v.kind == VisualKind::Cursor {
+                v.a_line = line;
+                v.a_col = col;
+            }
+        }
+        self.ensure_line_visible(line);
+    }
+
+    pub(crate) fn visual_extend_word(&mut self, forward: bool) {
+        let Some(v) = self.visual else {
+            return;
+        };
+        if !matches!(v.kind, VisualKind::Char | VisualKind::Cursor) || self.body.is_empty() {
+            return;
+        }
+        let (nl, nc) = if forward {
+            self.word_fwd_pos(v.b_line, v.b_col)
+        } else {
+            self.word_bwd_pos(v.b_line, v.b_col)
+        };
+        if let Some(v) = self.visual.as_mut() {
+            v.b_line = nl;
+            v.b_col = nc;
+            if v.kind == VisualKind::Cursor {
+                v.a_line = nl;
+                v.a_col = nc;
+            }
+        }
+        self.ensure_line_visible(nl);
+    }
+
+    /// Promote Cursor → Char with anchor at current caret.
+    pub(crate) fn visual_cursor_to_char(&mut self) {
+        let Some(v) = self.visual.as_mut() else {
+            return;
+        };
+        if v.kind != VisualKind::Cursor {
+            return;
+        }
+        v.kind = VisualKind::Char;
+        v.a_line = v.b_line;
+        v.a_col = v.b_col;
+        // ponytail: empty selection ok until moved (b may equal a)
+        self.status = "VISUAL — hjkl bw e EB 0$ ^ gg G · y · Esc".into();
+    }
+
+    fn word_fwd_pos(&self, line: usize, col: usize) -> (usize, usize) {
+        let max = self.body.len().saturating_sub(1);
+        let mut li = line.min(max);
+        let chars: Vec<char> = Self::line_plain(&self.body[li]).chars().collect();
+        if let Some(c) = word_fwd_col(&chars, col) {
+            return (li, c);
+        }
+        while li < max {
+            li += 1;
+            let chars: Vec<char> = Self::line_plain(&self.body[li]).chars().collect();
+            if chars.iter().any(|&c| is_word_char(c)) {
+                return (li, first_word_start(&chars));
+            }
+            if chars.is_empty() {
+                return (li, 0);
+            }
+        }
+        let len = self.line_len(line.min(max));
+        (line.min(max), len)
+    }
+
+    fn word_end_pos(&self, line: usize, col: usize) -> (usize, usize) {
+        let max = self.body.len().saturating_sub(1);
+        let mut li = line.min(max);
+        let chars: Vec<char> = Self::line_plain(&self.body[li]).chars().collect();
+        if let Some(c) = word_end_col(&chars, col) {
+            return (li, c);
+        }
+        while li < max {
+            li += 1;
+            let chars: Vec<char> = Self::line_plain(&self.body[li]).chars().collect();
+            if let Some(c) = word_end_col(&chars, 0) {
+                // from start of next line: end of first word if any
+                if chars.iter().any(|&ch| is_word_char(ch)) {
+                    return (li, c);
+                }
+            }
+            if chars.is_empty() {
+                return (li, 0);
+            }
+        }
+        let len = self.line_len(line.min(max));
+        (line.min(max), len.saturating_sub(1).min(len))
+    }
+
+    fn word_bwd_pos(&self, line: usize, col: usize) -> (usize, usize) {
+        let max = self.body.len().saturating_sub(1);
+        let mut li = line.min(max);
+        let chars: Vec<char> = Self::line_plain(&self.body[li]).chars().collect();
+        if let Some(c) = word_bwd_col(&chars, col) {
+            return (li, c);
+        }
+        while li > 0 {
+            li -= 1;
+            let chars: Vec<char> = Self::line_plain(&self.body[li]).chars().collect();
+            if chars.iter().any(|&c| is_word_char(c)) {
+                return (li, last_word_start(&chars));
+            }
+            if chars.is_empty() {
+                return (li, 0);
+            }
+        }
+        (0, 0)
     }
 
     pub(crate) fn yank_selection(&mut self) {
@@ -167,6 +556,10 @@ impl App {
             return;
         };
         let text = match v.kind {
+            VisualKind::Cursor => {
+                self.status = "yank: no selection".into();
+                return;
+            }
             VisualKind::Line => {
                 let a = v.a_line.min(v.b_line);
                 let b = v.a_line.max(v.b_line);
@@ -197,4 +590,22 @@ pub(crate) fn yank_osc52(text: &str) -> std::io::Result<()> {
     let mut out = std::io::stdout();
     write!(out, "\x1b]52;c;{b64}\x07")?;
     out.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn word_fwd_bwd_basic() {
+        // "foo bar_baz" — word = alnum + '_'
+        let chars: Vec<char> = "foo bar_baz".chars().collect();
+        assert_eq!(word_fwd_col(&chars, 0), Some(4)); // foo → bar_baz
+        assert_eq!(word_fwd_col(&chars, 4), None); // bar_baz to EOL
+        assert_eq!(word_bwd_col(&chars, 4), Some(0)); // bar_baz → foo
+        assert_eq!(word_bwd_col(&chars, 11), Some(4)); // end → bar_baz
+        assert_eq!(word_bwd_col(&chars, 0), None);
+        assert_eq!(first_word_start(&chars), 0);
+        assert_eq!(last_word_start(&chars), 4);
+    }
 }

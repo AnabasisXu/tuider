@@ -68,11 +68,9 @@ impl App {
             }
             super::InputMode::VimSearch => self.handle_vim_key(key),
             super::InputMode::Visual => {
-                if self.handle_visual_key(key) {
-                    return false;
-                }
-                // fall through like before: unmatched visual keys hit normal paths
-                self.handle_normal_key(key, ctrl, alt, shift)
+                // consume all keys here — fallthrough only scrolled viewport and left caret mid-screen
+                let _ = self.handle_visual_key(key);
+                false
             }
             super::InputMode::Normal => self.handle_normal_key(key, ctrl, alt, shift),
         }
@@ -195,11 +193,11 @@ impl App {
         }
 
         // --- body focus (sidebar hidden) -----------------------------------
-        // start visual: v = char, V = line
+        // start visual: v = cursor (then second v = char), V = line
         if key.modifiers == KeyModifiers::NONE && !self.body.is_empty() && self.visual.is_none() {
             match key.code {
                 KeyCode::Char('v') => {
-                    self.start_visual(VisualKind::Char);
+                    self.start_visual(VisualKind::Cursor);
                     return false;
                 }
                 KeyCode::Char('V') => {
@@ -365,33 +363,146 @@ impl App {
 
     /// Returns true if key was consumed by visual mode.
     fn handle_visual_key(&mut self, key: KeyEvent) -> bool {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let none = key.modifiers == KeyModifiers::NONE;
+        let shift_or_none = none || key.modifiers == KeyModifiers::SHIFT;
+
+        // gg chord: second key
+        if self.pending_g {
+            self.pending_g = false;
+            match key.code {
+                KeyCode::Char('g') if none => {
+                    self.visual_goto_line(0);
+                    return true;
+                }
+                KeyCode::Esc => {
+                    self.visual = None;
+                    self.status = "visual off".into();
+                    return true;
+                }
+                _ => {} // not gg — fall through to normal visual handle
+            }
+        }
+
         match key.code {
             KeyCode::Esc => {
                 self.visual = None;
+                self.pending_g = false;
                 self.status = "visual off".into();
                 true
             }
-            KeyCode::Char('y') if key.modifiers == KeyModifiers::NONE => {
+            KeyCode::Char('v') if none => {
+                if self
+                    .visual
+                    .as_ref()
+                    .is_some_and(|v| v.kind == VisualKind::Cursor)
+                {
+                    self.visual_cursor_to_char();
+                    true
+                } else {
+                    true // ignore extra v in Char/Line
+                }
+            }
+            KeyCode::Char('y') if none => {
                 self.yank_selection();
                 true
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up | KeyCode::Char('k') if !ctrl => {
                 self.visual_extend_line(-1);
                 true
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down | KeyCode::Char('j') if !ctrl => {
                 self.visual_extend_line(1);
                 true
             }
-            KeyCode::Left | KeyCode::Char('h') => {
+            KeyCode::Left | KeyCode::Char('h') if !ctrl => {
                 self.visual_extend_col(-1);
                 true
             }
-            KeyCode::Right | KeyCode::Char('l') => {
+            KeyCode::Right | KeyCode::Char('l') if !ctrl => {
                 self.visual_extend_col(1);
                 true
             }
-            _ => false,
+            KeyCode::Char('w') if none => {
+                self.visual_extend_word(true);
+                true
+            }
+            KeyCode::Char('b') if none => {
+                self.visual_extend_word(false);
+                true
+            }
+            KeyCode::Char('e') if none => {
+                self.visual_extend_word_end();
+                true
+            }
+            KeyCode::Char('E') if shift_or_none => {
+                self.visual_extend_line_edge(true);
+                true
+            }
+            KeyCode::Char('B') if key.modifiers == KeyModifiers::SHIFT => {
+                // SHIFT+B line start; plain b is word back
+                self.visual_extend_line_edge(false);
+                true
+            }
+            KeyCode::Char('0') if none => {
+                self.visual_extend_line_edge(false);
+                true
+            }
+            KeyCode::Char('^') if none || key.modifiers == KeyModifiers::SHIFT => {
+                self.visual_first_nonblank();
+                true
+            }
+            KeyCode::Char('$') if none || key.modifiers == KeyModifiers::SHIFT => {
+                self.visual_extend_line_edge(true);
+                true
+            }
+            KeyCode::Home => {
+                self.visual_extend_line_edge(false);
+                true
+            }
+            KeyCode::End => {
+                self.visual_extend_line_edge(true);
+                true
+            }
+            KeyCode::Char('g') if none => {
+                self.pending_g = true;
+                true
+            }
+            KeyCode::Char('G') if shift_or_none => {
+                let last = self.body.len().saturating_sub(1);
+                self.visual_goto_line(last);
+                true
+            }
+            KeyCode::Char('H') if shift_or_none => {
+                self.visual_goto_viewport('H');
+                true
+            }
+            KeyCode::Char('M') if shift_or_none => {
+                self.visual_goto_viewport('M');
+                true
+            }
+            KeyCode::Char('L') if shift_or_none => {
+                self.visual_goto_viewport('L');
+                true
+            }
+            KeyCode::PageDown | KeyCode::Char('f') if ctrl || matches!(key.code, KeyCode::PageDown) => {
+                self.visual_page(true, false);
+                true
+            }
+            KeyCode::PageUp | KeyCode::Char('b') if ctrl || matches!(key.code, KeyCode::PageUp) => {
+                self.visual_page(false, false);
+                true
+            }
+            KeyCode::Char('d') if ctrl => {
+                self.visual_page(true, true);
+                true
+            }
+            KeyCode::Char('u') if ctrl => {
+                self.visual_page(false, true);
+                true
+            }
+            // also accept bare Page without ctrl already covered
+            _ => true, // swallow — never fall through to scroll-only nav
         }
     }
 
