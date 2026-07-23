@@ -344,7 +344,7 @@ fn open_files(paths: Vec<PathBuf>, recursive: bool, list_mode: bool) -> Result<(
         });
     }
     if docs.is_empty() {
-        eprintln!("tuider: no .md / .txt under given path(s)");
+        eprintln!("tuider: no readable docs (.md/.txt/.mdx/scripts) under given path(s)");
         return Err(ExitCode::from(1));
     }
     run_tui(Box::new(FileTreeSource::new(docs)))
@@ -423,7 +423,7 @@ CORE OPTIONS:
     -V, --version
 
 CORE:
-    md/txt reader, vim /, visual+yank
+    md/txt/mdx/scripts reader, vim /, visual+yank
 {ai_line}
 PLUGINS DIR:
     {}

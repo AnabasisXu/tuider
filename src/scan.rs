@@ -1,4 +1,4 @@
-//! Scan directories for `.md` / `.txt` documents.
+//! Scan directories for readable docs (md/txt/mdx/scripts).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -43,15 +43,25 @@ fn walk(root: &Path, dir: &Path, recursive: bool, out: &mut Vec<(String, PathBuf
     }
 }
 
-fn is_doc(path: &Path) -> bool {
-    extension_is(path, "md") || extension_is(path, "txt")
-}
-
-fn extension_is(path: &Path, ext: &str) -> bool {
+/// True for md, txt, mdx, and script/code extensions.
+pub fn is_doc(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case(ext))
+        .is_some_and(|e| {
+            e.eq_ignore_ascii_case("md")
+                || e.eq_ignore_ascii_case("txt")
+                || e.eq_ignore_ascii_case("mdx")
+                || CODE_EXTS.iter().any(|x| e.eq_ignore_ascii_case(x))
+        })
 }
+
+// keep in sync with plugin_catalog CODE_EXTS
+const CODE_EXTS: &[&str] = &[
+    "rs", "py", "go", "js", "ts", "tsx", "jsx", "c", "h", "cpp", "hpp", "java", "kt", "swift",
+    "rb", "php", "cs", "sh", "bash", "zsh", "fish", "toml", "yaml", "yml", "json", "html", "css",
+    "sql", "lua", "vim", "zig",
+];
+
 
 /// Collision-safe display names: stem, or `stem (parent)` when stems collide.
 fn display_names(entries: Vec<(String, PathBuf)>) -> Vec<(String, PathBuf)> {
@@ -102,14 +112,15 @@ mod tests {
     }
 
     #[test]
-    fn mixed_extensions_ignore_mdx() {
+    fn mixed_extensions_includes_mdx_and_scripts() {
         let dir = tmp("mix");
         fs::write(dir.join("a.md"), "# a").unwrap();
         fs::write(dir.join("b.txt"), "b").unwrap();
         fs::write(dir.join("c.mdx"), "x").unwrap();
         fs::write(dir.join("d.rs"), "fn").unwrap();
+        fs::write(dir.join("e.bin"), "\0\0").unwrap();
         let names: Vec<_> = scan_docs(&dir, false).into_iter().map(|(n, _)| n).collect();
-        assert_eq!(names, vec!["a", "b"]);
+        assert_eq!(names, vec!["a", "b", "c", "d"]);
         let _ = fs::remove_dir_all(dir);
     }
 

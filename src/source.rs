@@ -1,4 +1,4 @@
-//! Local md/txt document source.
+//! Local document source (md/txt/mdx/scripts via scan::is_doc).
 
 use std::path::{Path, PathBuf};
 
@@ -38,15 +38,8 @@ impl ContentSource for FileTreeSource {
     }
 
     fn ensure_local_doc(&mut self, path: &Path) -> Option<usize> {
-        // ponytail: relative f-links stay in-app; never xdg-open .md/.txt
-        if !path.is_file() {
-            return None;
-        }
-        let is_doc = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("txt"));
-        if !is_doc {
+        // ponytail: relative f-links stay in-app for readable docs
+        if !path.is_file() || !crate::scan::is_doc(path) {
             return None;
         }
         let canon = path.canonicalize().ok();
