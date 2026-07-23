@@ -267,16 +267,14 @@ impl App {
             }
             Overlay::Toc => {
                 if let Some(h) = self.headings.get(idx).cloned() {
-                    self.ensure_line_visible(h.line);
-                    self.scroll = h.line as u16;
+                    self.set_caret(h.line, 0);
                     self.status = format!("jumped to: {}", h.text);
                 }
             }
             Overlay::Consult => {
                 // keep tokens so body highlight shows real matched substrings
                 let q = self.nav.query.clone();
-                self.ensure_line_visible(idx);
-                self.scroll = idx as u16;
+                self.set_caret(idx, 0);
                 self.vim_query = q;
                 self.vim_match_idx = 0;
                 if !self.vim_query.is_empty() {
@@ -307,7 +305,7 @@ impl App {
                 .iter()
                 .find(|h| heading_slug(&h.text) == anchor)
             {
-                self.scroll = h.line as u16;
+                self.set_caret(h.line, 0);
                 self.status = format!("jumped to #{anchor}");
             } else {
                 self.status = format!("heading not found: #{anchor}");
@@ -349,7 +347,7 @@ impl App {
                         .iter()
                         .find(|h| heading_slug(&h.text) == a)
                     {
-                        self.scroll = h.line as u16;
+                        self.set_caret(h.line, 0);
                     }
                 }
                 self.status = format!("opened: {}", resolved.display());

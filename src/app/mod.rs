@@ -44,6 +44,9 @@ pub struct App {
     pub(crate) source: Box<dyn ContentSource>,
     pub(crate) body: Vec<Line<'static>>,
     pub(crate) scroll: u16,
+    /// Body caret (independent of scroll). v/V and motions use this.
+    pub(crate) caret_line: usize,
+    pub(crate) caret_col: usize,
     pub(crate) filter: String,
     pub(crate) filtered: Vec<usize>,
     pub(crate) list_sel: usize,
@@ -83,6 +86,8 @@ impl App {
             source,
             body: Vec::new(),
             scroll: 0,
+            caret_line: 0,
+            caret_col: 0,
             filter: String::new(),
             filtered: Vec::new(),
             list_sel: 0,
@@ -337,7 +342,28 @@ impl App {
     }
 
     pub(crate) fn caret_line(&self) -> usize {
-        (self.scroll as usize).min(self.body.len().saturating_sub(1))
+        self.caret_line
+            .min(self.body.len().saturating_sub(1))
+    }
+
+    pub(crate) fn caret_col(&self) -> usize {
+        let line = self.caret_line();
+        self.caret_col.min(self.line_len(line))
+    }
+
+    /// Set body caret and keep it in view.
+    pub(crate) fn set_caret(&mut self, line: usize, col: usize) {
+        if self.body.is_empty() {
+            self.caret_line = 0;
+            self.caret_col = 0;
+            return;
+        }
+        let max = self.body.len() - 1;
+        let line = line.min(max);
+        let col = col.min(self.line_len(line));
+        self.caret_line = line;
+        self.caret_col = col;
+        self.ensure_line_visible(line);
     }
 
     /// Keep `line` inside the content viewport without jumping it to the top.
@@ -570,6 +596,8 @@ impl App {
         self.links = result.links;
         self.headings = result.headings;
         self.scroll = 0;
+        self.caret_line = 0;
+        self.caret_col = 0;
         self.status = result.status;
         self.loaded_doc = Some(di);
         self.visual = None;
@@ -615,7 +643,7 @@ impl App {
             self.status = "no Meta/Article/Comments sections".into();
             return;
         }
-        let cur = self.scroll as usize;
+        let cur = self.caret_line();
         let mut at = 0usize;
         for (k, &hi) in pool.iter().enumerate() {
             if self.headings[hi].line <= cur {
@@ -641,14 +669,11 @@ impl App {
         if dir > 0 && target == at && at + 1 < pool.len() {
             target = at + 1;
         }
-        let h = &self.headings[pool[target]];
-        self.scroll = h.line as u16;
-        self.status = format!(
-            "§ {}  ({}/{})  [ ]",
-            h.text,
-            target + 1,
-            pool.len()
-        );
+        let line = self.headings[pool[target]].line;
+        let text = self.headings[pool[target]].text.clone();
+        let n = pool.len();
+        self.set_caret(line, 0);
+        self.status = format!("§ {}  ({}/{})  [ ]", text, target + 1, n);
     }
 
 

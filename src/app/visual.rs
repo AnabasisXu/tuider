@@ -224,9 +224,15 @@ impl App {
             return;
         }
         self.pending_g = false;
-        // viewport top (scroll); not mid-screen ghost from prior scroll-only keys
-        let line = self.caret_line();
+        // v/V: place caret on middle line of current viewport
+        let max = self.body.len() - 1;
+        let h = self.content_view_h();
+        let top = self.scroll as usize;
+        let bot = top.saturating_add(h.saturating_sub(1)).min(max);
+        let line = top + (bot.saturating_sub(top)) / 2;
         let col = 0;
+        self.caret_line = line;
+        self.caret_col = col;
         self.visual = Some(VisualSel {
             kind,
             a_line: line,
@@ -239,9 +245,9 @@ impl App {
             },
         });
         self.status = match kind {
-            VisualKind::Cursor => "CURSOR — hjkl bw e EB 0$ ^ gg G HML C-d/u · v · Esc".into(),
-            VisualKind::Line => "VISUAL LINE — jk gg G HML C-d/u · y · Esc".into(),
-            VisualKind::Char => "VISUAL — hjkl bw e EB 0$ ^ gg G HML · y · Esc".into(),
+            VisualKind::Cursor => "CURSOR — hjkl bw e · 0$^ gg G HML · v select · Esc".into(),
+            VisualKind::Line => "VISUAL LINE — jk gg G HML · y · Esc".into(),
+            VisualKind::Char => "VISUAL — hjkl bw e · y · Esc".into(),
         };
     }
 
@@ -253,6 +259,7 @@ impl App {
     }
 
     /// Move caret/end (b_*) — Cursor also moves anchor.
+    /// Move caret/end (b_*) — Cursor also moves anchor. Syncs body caret.
     pub(crate) fn visual_set_pos(&mut self, line: usize, col: usize) {
         if self.body.is_empty() {
             return;
@@ -260,7 +267,10 @@ impl App {
         let max = self.body.len() - 1;
         let line = line.min(max);
         let col = col.min(self.line_len(line));
+        self.caret_line = line;
+        self.caret_col = col;
         let Some(v) = self.visual.as_mut() else {
+            self.ensure_line_visible(line);
             return;
         };
         v.b_line = line;
@@ -271,10 +281,86 @@ impl App {
         }
         if v.kind == VisualKind::Cursor {
             v.a_line = line;
-            v.a_col = v.b_col;
+            v.a_col = col;
         }
-        let line = v.b_line;
         self.ensure_line_visible(line);
+    }
+
+    pub(crate) fn body_move_line(&mut self, delta: isize) {
+        if self.body.is_empty() {
+            return;
+        }
+        let max = self.body.len() - 1;
+        let next = (self.caret_line() as isize + delta).clamp(0, max as isize) as usize;
+        let col = self.caret_col.min(self.line_len(next));
+        self.set_caret(next, col);
+    }
+
+    pub(crate) fn body_move_col(&mut self, delta: isize) {
+        if self.body.is_empty() {
+            return;
+        }
+        let max = self.body.len() - 1;
+        let mut line = self.caret_line().min(max);
+        let mut col = self.caret_col as isize + delta;
+        let mut len = self.line_len(line) as isize;
+        while col < 0 {
+            if line == 0 {
+                col = 0;
+                break;
+            }
+            line -= 1;
+            len = self.line_len(line) as isize;
+            col = len + col + 1;
+        }
+        while col > len {
+            if line >= max {
+                col = len;
+                break;
+            }
+            col -= len + 1;
+            line += 1;
+            len = self.line_len(line) as isize;
+        }
+        self.set_caret(line, col.clamp(0, len) as usize);
+    }
+
+    pub(crate) fn body_page(&mut self, forward: bool, half: bool) {
+        let h = self.content_view_h();
+        let step = if half { (h / 2).max(1) } else { h.max(1) } as isize;
+        let delta = if forward { step } else { -step };
+        let max = self.body.len().saturating_sub(1) as isize;
+        let next = (self.caret_line() as isize + delta).clamp(0, max) as usize;
+        self.set_caret(next, self.caret_col.min(self.line_len(next)));
+    }
+
+    pub(crate) fn body_goto_viewport(&mut self, where_: char) {
+        if self.body.is_empty() {
+            return;
+        }
+        let max = self.body.len() - 1;
+        let h = self.content_view_h();
+        let top = self.scroll as usize;
+        let bot = top.saturating_add(h.saturating_sub(1)).min(max);
+        let line = match where_ {
+            'H' => top,
+            'L' => bot,
+            _ => top + (bot.saturating_sub(top)) / 2,
+        };
+        self.set_caret(line, self.caret_col.min(self.line_len(line)));
+    }
+
+    pub(crate) fn body_first_nonblank(&mut self) {
+        if self.body.is_empty() {
+            return;
+        }
+        let line = self.caret_line();
+        let chars: Vec<char> = Self::line_plain(&self.body[line]).chars().collect();
+        let mut i = 0;
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        self.set_caret(line, i.min(chars.len()));
     }
 
     pub(crate) fn visual_goto_line(&mut self, line: usize) {
@@ -350,12 +436,19 @@ impl App {
     }
 
     /// Single-cell caret for Cursor mode paint.
+    /// Caret cell: Cursor mode uses visual b_*; normal mode uses body caret.
     pub fn visual_cursor_cell(&self) -> Option<(usize, usize)> {
-        let v = self.visual.as_ref()?;
-        if v.kind != VisualKind::Cursor {
+        if let Some(v) = self.visual.as_ref() {
+            if v.kind == VisualKind::Cursor {
+                return Some((v.b_line, v.b_col));
+            }
+            return None; // Char/Line: selection paint only
+        }
+        // always show caret on body when not selecting
+        if self.body.is_empty() {
             return None;
         }
-        Some((v.b_line, v.b_col))
+        Some((self.caret_line(), self.caret_col()))
     }
 
     pub(crate) fn visual_extend_line(&mut self, delta: isize) {
@@ -382,6 +475,8 @@ impl App {
                 v.a_col = col;
             }
         }
+        self.caret_line = next;
+        self.caret_col = col;
         self.ensure_line_visible(next);
     }
 
@@ -424,6 +519,8 @@ impl App {
                 v.a_col = col;
             }
         }
+        self.caret_line = line;
+        self.caret_col = col;
         self.ensure_line_visible(line);
     }
 
@@ -445,6 +542,8 @@ impl App {
                 v.a_col = col;
             }
         }
+        self.caret_line = line;
+        self.caret_col = col;
         self.ensure_line_visible(line);
     }
 
@@ -468,6 +567,8 @@ impl App {
                 v.a_col = nc;
             }
         }
+        self.caret_line = nl;
+        self.caret_col = nc;
         self.ensure_line_visible(nl);
     }
 
@@ -483,10 +584,10 @@ impl App {
         v.a_line = v.b_line;
         v.a_col = v.b_col;
         // ponytail: empty selection ok until moved (b may equal a)
-        self.status = "VISUAL — hjkl bw e EB 0$ ^ gg G · y · Esc".into();
+        self.status = "VISUAL — hjkl bw e · y · Esc".into();
     }
 
-    fn word_fwd_pos(&self, line: usize, col: usize) -> (usize, usize) {
+    pub(crate) fn word_fwd_pos(&self, line: usize, col: usize) -> (usize, usize) {
         let max = self.body.len().saturating_sub(1);
         let mut li = line.min(max);
         let chars: Vec<char> = Self::line_plain(&self.body[li]).chars().collect();
@@ -507,7 +608,7 @@ impl App {
         (line.min(max), len)
     }
 
-    fn word_end_pos(&self, line: usize, col: usize) -> (usize, usize) {
+    pub(crate) fn word_end_pos(&self, line: usize, col: usize) -> (usize, usize) {
         let max = self.body.len().saturating_sub(1);
         let mut li = line.min(max);
         let chars: Vec<char> = Self::line_plain(&self.body[li]).chars().collect();
@@ -518,7 +619,6 @@ impl App {
             li += 1;
             let chars: Vec<char> = Self::line_plain(&self.body[li]).chars().collect();
             if let Some(c) = word_end_col(&chars, 0) {
-                // from start of next line: end of first word if any
                 if chars.iter().any(|&ch| is_word_char(ch)) {
                     return (li, c);
                 }
@@ -531,7 +631,7 @@ impl App {
         (line.min(max), len.saturating_sub(1).min(len))
     }
 
-    fn word_bwd_pos(&self, line: usize, col: usize) -> (usize, usize) {
+    pub(crate) fn word_bwd_pos(&self, line: usize, col: usize) -> (usize, usize) {
         let max = self.body.len().saturating_sub(1);
         let mut li = line.min(max);
         let chars: Vec<char> = Self::line_plain(&self.body[li]).chars().collect();

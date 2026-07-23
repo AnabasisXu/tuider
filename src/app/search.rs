@@ -78,11 +78,7 @@ impl App {
         let idx = which % hits.len();
         self.vim_match_idx = idx;
         let hit = hits[idx];
-        self.ensure_line_visible(hit.line);
-        // if match above viewport top after ensure, still ok
-        if (self.scroll as usize) > hit.line {
-            self.scroll = hit.line as u16;
-        }
+        self.set_caret(hit.line, hit.start);
         self.status = format!("/{}  {}/{}", self.vim_query, idx + 1, hits.len());
     }
 

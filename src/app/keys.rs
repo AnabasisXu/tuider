@@ -193,7 +193,13 @@ impl App {
         }
 
         // --- body focus (sidebar hidden) -----------------------------------
-        // start visual: v = cursor (then second v = char), V = line
+        // vim motions + caret (shared with visual); v/V start select at caret
+        if !sidebar && self.visual.is_none() && !self.body.is_empty() {
+            if self.handle_body_motion(key, ctrl) {
+                return false;
+            }
+        }
+
         if key.modifiers == KeyModifiers::NONE && !self.body.is_empty() && self.visual.is_none() {
             match key.code {
                 KeyCode::Char('v') => {
@@ -359,6 +365,132 @@ impl App {
             _ => {}
         }
         false
+    }
+
+    /// Normal-mode body caret motions (not select). Returns true if consumed.
+    fn handle_body_motion(&mut self, key: KeyEvent, ctrl: bool) -> bool {
+        let none = key.modifiers == KeyModifiers::NONE;
+        let shift_or_none = none || key.modifiers == KeyModifiers::SHIFT;
+
+        if self.pending_g {
+            self.pending_g = false;
+            if none && matches!(key.code, KeyCode::Char('g')) {
+                self.set_caret(0, 0);
+                return true;
+            }
+            // else fall through
+        }
+
+        match key.code {
+            KeyCode::Char('h') | KeyCode::Left if !ctrl && (none || key.modifiers == KeyModifiers::NONE) => {
+                self.body_move_col(-1);
+                true
+            }
+            KeyCode::Char('l') | KeyCode::Right if !ctrl && none => {
+                self.body_move_col(1);
+                true
+            }
+            KeyCode::Char('j') | KeyCode::Down if !ctrl && none => {
+                self.body_move_line(1);
+                true
+            }
+            KeyCode::Char('k') | KeyCode::Up if !ctrl && none => {
+                self.body_move_line(-1);
+                true
+            }
+            KeyCode::Char('w') if none => {
+                let (l, c) = self.word_fwd_pos(self.caret_line(), self.caret_col());
+                self.set_caret(l, c);
+                true
+            }
+            KeyCode::Char('b') if none => {
+                let (l, c) = self.word_bwd_pos(self.caret_line(), self.caret_col());
+                self.set_caret(l, c);
+                true
+            }
+            KeyCode::Char('e') if none => {
+                let (l, c) = self.word_end_pos(self.caret_line(), self.caret_col());
+                self.set_caret(l, c);
+                true
+            }
+            KeyCode::Char('0') if none => {
+                self.set_caret(self.caret_line(), 0);
+                true
+            }
+            KeyCode::Char('^') if none || key.modifiers == KeyModifiers::SHIFT => {
+                self.body_first_nonblank();
+                true
+            }
+            KeyCode::Char('$') if none || key.modifiers == KeyModifiers::SHIFT => {
+                let line = self.caret_line();
+                self.set_caret(line, self.line_len(line));
+                true
+            }
+            KeyCode::Char('E') if shift_or_none => {
+                let line = self.caret_line();
+                self.set_caret(line, self.line_len(line));
+                true
+            }
+            KeyCode::Char('B') if key.modifiers == KeyModifiers::SHIFT => {
+                self.set_caret(self.caret_line(), 0);
+                true
+            }
+            KeyCode::Char('g') if none => {
+                self.pending_g = true;
+                true
+            }
+            KeyCode::Char('G') if shift_or_none => {
+                let last = self.body.len().saturating_sub(1);
+                self.set_caret(last, 0);
+                true
+            }
+            KeyCode::Char('H') if shift_or_none => {
+                self.body_goto_viewport('H');
+                true
+            }
+            KeyCode::Char('M') if shift_or_none => {
+                self.body_goto_viewport('M');
+                true
+            }
+            KeyCode::Char('L') if shift_or_none => {
+                self.body_goto_viewport('L');
+                true
+            }
+            KeyCode::PageDown if !ctrl => {
+                self.body_page(true, false);
+                true
+            }
+            KeyCode::PageUp if !ctrl => {
+                self.body_page(false, false);
+                true
+            }
+            KeyCode::Char('f') if ctrl => {
+                self.body_page(true, false);
+                true
+            }
+            KeyCode::Char('b') if ctrl => {
+                self.body_page(false, false);
+                true
+            }
+            KeyCode::Char('d') if ctrl => {
+                self.body_page(true, true);
+                true
+            }
+            KeyCode::Char('u') if ctrl => {
+                self.body_page(false, true);
+                true
+            }
+            KeyCode::Home if none => {
+                self.set_caret(self.caret_line(), 0);
+                true
+            }
+            KeyCode::End if none => {
+                let line = self.caret_line();
+                self.set_caret(line, self.line_len(line));
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Returns true if key was consumed by visual mode.
@@ -555,10 +687,17 @@ impl App {
                 self.move_sel((self.list_page_size() as isize / 2).max(1));
             }
             KeyCode::Up | KeyCode::Char('k') if !sidebar => {
-                self.scroll = self.scroll.saturating_sub(1);
+                // caret-aware line move (not scroll-only)
+                self.body_move_line(-1);
             }
             KeyCode::Down | KeyCode::Char('j') if !sidebar => {
-                self.scroll = self.scroll.saturating_add(1);
+                self.body_move_line(1);
+            }
+            KeyCode::PageUp if !sidebar => {
+                self.body_page(false, false);
+            }
+            KeyCode::PageDown if !sidebar => {
+                self.body_page(true, false);
             }
             KeyCode::PageUp => {
                 self.scroll = self.scroll.saturating_sub(self.content_page_step());
@@ -580,9 +719,15 @@ impl App {
                     }
                 }
             }
+            KeyCode::Home if !sidebar => {
+                self.set_caret(self.caret_line(), 0);
+            }
+            KeyCode::End if !sidebar => {
+                let line = self.caret_line();
+                self.set_caret(line, self.line_len(line));
+            }
             KeyCode::Home => self.scroll = 0,
             KeyCode::End => {
-                // last viewport page (not last line) — matches draw_content max_scroll
                 let h = self
                     .content_area
                     .map(|a| a.height.saturating_sub(1) as usize)
