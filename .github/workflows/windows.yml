@@ -8,11 +8,20 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: tuider
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: tuider
+      - uses: actions/checkout@v4
+        with:
+          repository: AnabasisXu/mdx-tui-mdict
+          path: mdx-tui-mdict
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release
+      - run: cargo build --release -p tuider
       - uses: actions/upload-artifact@v4
         with:
           name: tuider-windows-x64
-          path: target/release/tuider.exe
+          path: tuider/target/release/tuider.exe
