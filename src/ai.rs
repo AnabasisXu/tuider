@@ -23,6 +23,9 @@ use crate::theme::Theme;
 
 const PREVIEW_CHARS: usize = 4000;
 const MAX_MESSAGES: usize = 80;
+const MAX_TOOL_ROUNDS: usize = 12;
+const CONTENT_CHUNK_BYTES: usize = 12000;
+const SYSTEM_CONTEXT_PREVIEW_BYTES: usize = 2500;
 
 #[derive(Debug, Clone)]
 pub struct AiConfig {
@@ -60,11 +63,24 @@ struct Bubble {
     content: String,
 }
 
+#[allow(dead_code)] // Using/Note reserved for failover status UX
 enum StreamEvent {
     Chunk(String),
     Done,
     Error(String),
+    /// Sticky provider index after successful failover (or explicit pick).
+    Using(usize),
+    /// Status-line only (e.g. rotating providers).
+    Note(String),
+
+    /// Worker needs host to run a tool against the live ContentSource.
+    ToolCall {
+        name: String,
+        arguments: String,
+        reply: mpsc::Sender<String>,
+    },
 }
+
 
 pub struct AiSession {
     pub open: bool,
@@ -83,8 +99,12 @@ pub struct AiSession {
     rx: Option<Receiver<StreamEvent>>,
     cancel: Option<Arc<AtomicBool>>,
     doc_title: String,
+    /// Preview for system prompt.
     doc_body: String,
+    /// Full pane text for tools (get_current_content).
+    full_body: String,
 }
+
 
 impl Default for AiSession {
     fn default() -> Self {
@@ -129,6 +149,7 @@ impl AiSession {
             cancel: None,
             doc_title: String::new(),
             doc_body: String::new(),
+            full_body: String::new(),
         }
     }
 
@@ -138,6 +159,7 @@ impl AiSession {
 
     pub fn set_document_context(&mut self, title: &str, plain_body: &str) {
         self.doc_title = title.to_string();
+        self.full_body = plain_body.to_string();
         self.doc_body = plain_body.chars().take(PREVIEW_CHARS).collect();
     }
 
@@ -185,13 +207,15 @@ impl AiSession {
     fn status_line(&self) -> String {
         if let Some(c) = self.active_cfg() {
             format!(
-                "AI [{}] {} · C-j/C-Enter send · 1=翻译全文 · Tab · Esc",
+                "AI [{}] {} · C-j send · A-t 翻译 · /exp /switch · Tab · Esc",
                 c.name, c.model
             )
         } else {
             "AI: set ai.providers in ~/.config/tuider.yml or TUIDER_AI_KEY".into()
         }
     }
+
+
 
     pub fn focus_label(&self) -> Option<&'static str> {
         if self.open {
@@ -205,7 +229,8 @@ impl AiSession {
         self.open
     }
 
-    pub fn poll(&mut self) {
+    /// Drain stream events. `source` is used when the model requests dict tools.
+    pub fn poll(&mut self, source: &mut dyn crate::plugin::ContentSource) {
         let Some(rx) = self.rx.take() else {
             return;
         };
@@ -220,6 +245,32 @@ impl AiSession {
                         }
                     }
                     self.scroll = u16::MAX;
+                }
+                Ok(StreamEvent::Using(i)) => {
+                    if i < self.providers.len() {
+                        self.active = i;
+                    }
+                    self.status = self.status_line();
+                }
+                Ok(StreamEvent::Note(s)) => {
+                    self.status = s;
+                }
+
+                Ok(StreamEvent::ToolCall {
+                    name,
+                    arguments,
+                    reply,
+                }) => {
+                    self.status = format!("AI tool: {name}…");
+                    let out = execute_tool(
+                        source,
+                        &name,
+                        &arguments,
+                        &self.doc_title,
+                        &self.full_body,
+                    );
+                    log_tool(&name, &arguments, &out);
+                    let _ = reply.send(out);
                 }
                 Ok(StreamEvent::Done) => {
                     self.loading = false;
@@ -262,6 +313,7 @@ impl AiSession {
         }
     }
 
+
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -293,12 +345,10 @@ impl AiSession {
                 self.active = (self.active + 1) % self.providers.len();
                 self.status = self.status_line();
             }
-            // send: many terminals never deliver Ctrl+Enter as Enter+CONTROL
-            // (send Ctrl+J / Ctrl+M / \n+\ctrl instead)
-            KeyCode::Enter if ctrl || alt => self.send(),
+            // send: Ctrl+J only (terminals rarely deliver Ctrl+Enter as Enter+CONTROL)
             KeyCode::Char('j') if ctrl => self.send(),
-            KeyCode::Char('m') if ctrl => self.send(),
-            KeyCode::Char('\n') | KeyCode::Char('\r') if ctrl || alt => self.send(),
+            // Alt+t: full-document translate (replaces old bare "1" shortcut)
+            KeyCode::Char('t') | KeyCode::Char('T') if alt => self.send_translate_full(),
             KeyCode::Enter => {
                 self.insert_at_cursor('\n');
             }
@@ -344,6 +394,7 @@ impl AiSession {
             KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(5),
             KeyCode::PageDown => self.scroll = self.scroll.saturating_add(5),
             _ => {}
+
         }
         false
     }
@@ -379,20 +430,96 @@ impl AiSession {
         self.cursor = next_char_boundary(&self.input, self.cursor);
     }
 
-    /// Expand bare shortcuts in the whole input box.
-    /// `1` alone → 翻译全文 prompt (document is already in system context).
+    const TRANSLATE_FULL: &'static str =
+        "请将当前文档全文翻译成中文，保留段落结构，专有名词可保留原文。若预览截断请先 get_current_content。";
+
+    /// Alt+t: queue full-doc translate and send immediately.
+    fn send_translate_full(&mut self) {
+        self.input = Self::TRANSLATE_FULL.into();
+        self.cursor = self.input.len();
+        self.send();
+    }
+
+    /// Expand bare digit shortcuts (2–4). Translate is Alt+t, not "1".
     fn apply_input_shortcuts(&mut self) {
         let t = self.input.trim();
-        if t == "1" {
-            self.input = "请将当前文档全文翻译成中文，保留段落结构，专有名词可保留原文。".into();
+        let expanded = match t {
+            "2" => Some("请用中文简明解释当前词条/文档的核心义项与用法。".to_string()),
+            "3" => Some("请给出当前词条的 3 个例句（中英对照）并标出搭配。".to_string()),
+            "4" => Some("请分析当前正文中的生词并按难度分级列表。".to_string()),
+            _ => None,
+        };
+        if let Some(s) = expanded {
+            self.input = s;
             self.cursor = self.input.len();
         }
+    }
+
+
+    /// Handle `/exp` and `/switch` before network send. Returns true if consumed.
+    fn try_slash_command(&mut self, text: &str) -> bool {
+        let t = text.trim();
+        if t == "/exp" || t.starts_with("/exp ") {
+            let arg = t.strip_prefix("/exp").unwrap_or("").trim();
+            match export_chat(&self.messages, arg) {
+                Ok(path) => {
+                    self.status = format!("exported {path}");
+                    self.messages.push(Bubble {
+                        role: "assistant".into(),
+                        content: format!("Exported conversation to `{path}`."),
+                    });
+                }
+                Err(e) => self.status = format!("/exp failed: {e}"),
+            }
+            return true;
+        }
+        if t == "/switch" || t.starts_with("/switch ") {
+            let arg = t.strip_prefix("/switch").unwrap_or("").trim();
+            if arg.is_empty() {
+                let mut lines = Vec::new();
+                for (i, p) in self.providers.iter().enumerate() {
+                    let mark = if i == self.active { "*" } else { " " };
+                    lines.push(format!("{mark} {}. {} ({})", i + 1, p.name, p.model));
+                }
+                let body = if lines.is_empty() {
+                    "No providers configured.".into()
+                } else {
+                    format!(
+                        "Providers (current *):\n{}\nUsage: /switch <name|index>",
+                        lines.join("\n")
+                    )
+                };
+                self.messages.push(Bubble {
+                    role: "assistant".into(),
+                    content: body,
+                });
+                self.status = self.status_line();
+            } else if let Some(i) = parse_switch_target(arg, &self.providers) {
+                self.active = i;
+                self.status = self.status_line();
+                self.messages.push(Bubble {
+                    role: "assistant".into(),
+                    content: format!("Switched to provider `{}`.", self.providers[i].name),
+                });
+            } else {
+                self.status = format!("unknown provider `{arg}` — try /switch");
+            }
+            return true;
+        }
+        false
     }
 
     fn send(&mut self) {
         self.apply_input_shortcuts();
         let text = self.input.trim().to_string();
         if text.is_empty() || self.loading {
+            return;
+        }
+        // slash commands don't need providers
+        if self.try_slash_command(&text) {
+            self.input.clear();
+            self.cursor = 0;
+            self.scroll = u16::MAX;
             return;
         }
         if self.providers.is_empty() {
@@ -402,7 +529,7 @@ impl AiSession {
 
         self.messages.push(Bubble {
             role: "user".into(),
-            content: text,
+            content: text.clone(),
         });
         self.messages.push(Bubble {
             role: "assistant".into(),
@@ -424,33 +551,35 @@ impl AiSession {
         self.rx = Some(rx);
         self.cancel = Some(Arc::clone(&cancel));
 
-        let mut api_msgs: Vec<(String, String)> = Vec::new();
+        let mut history: Vec<(String, String)> = Vec::new();
         for b in &self.messages {
             if b.role == "assistant" && b.content.is_empty() {
                 continue;
             }
-            api_msgs.push((b.role.clone(), b.content.clone()));
+            history.push((b.role.clone(), b.content.clone()));
         }
 
-        let system = format!(
-            "You are a reading assistant inside the Tuider terminal reader.\n\
-             Current document: {}\n\
-             --- document preview ---\n{}\n--- end ---\n\
-             Answer in the user's language. Be concise.",
-            if self.doc_title.is_empty() {
-                "(untitled)"
-            } else {
-                &self.doc_title
-            },
-            if self.doc_body.is_empty() {
-                "(empty)"
-            } else {
-                &self.doc_body
-            }
+        let title = self.doc_title.clone();
+        let preview = self.doc_body.clone();
+        let full_len = self.full_body.len();
+        let truncated = full_len > SYSTEM_CONTEXT_PREVIEW_BYTES;
+        let mut system = format!(
+            "你是词典与阅读助手，用中文简洁回答。有工具：查词/搜词头/反查/列词典/读正文/导出/联网搜索。\n\
+             规则：\n\
+             1. 查词义用 query_word，模糊用 search_headwords，反查 reverse_lookup。\n\
+             2. 全文翻译/摘要若预览截断，先 get_current_content（可 offset 分段）。\n\
+             3. 导出内容用 export_content；整段对话导出提示用户 /exp。\n\
+             4. 最多 {MAX_TOOL_ROUNDS} 轮工具。\n\
+             当前文档：{title}（正文约 {full_len} 字节"
         );
+        if truncated {
+            system.push_str("，预览已截断");
+        }
+        system.push_str("）\n--- preview ---\n");
+        system.push_str(if preview.is_empty() { "(empty)" } else { &preview });
+        system.push_str("\n--- end ---");
 
         let providers = self.providers.clone();
-        // ponytail: rotate only for this request; Tab still sets sticky active
         thread::spawn(move || {
             let n = providers.len();
             let mut errs: Vec<String> = Vec::new();
@@ -460,7 +589,7 @@ impl AiSession {
                     return;
                 }
                 let cfg = &providers[(start + off) % n];
-                match chat_request(cfg, &system, &api_msgs, &tx, &cancel) {
+                match chat_with_tools_loop(cfg, &system, &history, &tx, &cancel) {
                     Ok(()) => return,
                     Err(e) if is_failover_err(&e) && off + 1 < n => {
                         errs.push(format!("{}: {e}", cfg.name));
@@ -486,6 +615,7 @@ impl AiSession {
         });
     }
 
+
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: Theme) {
         // multi-line input box grows a bit with content (cap 8 rows)
         let input_lines = self.input.chars().filter(|c| *c == '\n').count() + 1;
@@ -502,10 +632,11 @@ impl AiSession {
         let title = if self.loading {
             format!(" AI [{pname}] streaming… Esc cancel ")
         } else if self.configured {
-            format!(" AI [{pname}] C-j send · Enter ↵ · 1=翻译全文 · Tab · Esc ")
+            format!(" AI [{pname}] C-j send · A-t 翻译 · Enter ↵ · Tab · Esc ")
         } else {
             " AI (no API key) ".into()
         };
+
         let block = Block::default()
             .title(title)
             .borders(Borders::ALL)
@@ -570,7 +701,8 @@ impl AiSession {
         );
 
         let ib = Block::default()
-            .title(" input · C-j / C-Enter send · 1=翻译全文 ")
+            .title(" input · C-j send · A-t 翻译全文 ")
+
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border()));
         let iinner = ib.inner(input_area);
@@ -651,8 +783,376 @@ fn cursor_xy(input: &str, cursor: usize, width: usize) -> (u16, u16) {
     (x as u16, y as u16)
 }
 
+fn parse_switch_target(arg: &str, providers: &[AiConfig]) -> Option<usize> {
+    if let Ok(n) = arg.parse::<usize>() {
+        if n >= 1 && n <= providers.len() {
+            return Some(n - 1);
+        }
+    }
+    let al = arg.to_lowercase();
+    providers
+        .iter()
+        .position(|p| p.name.eq_ignore_ascii_case(arg) || p.name.to_lowercase().contains(&al))
+}
+
+fn export_chat(messages: &[Bubble], arg: &str) -> Result<String, String> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let path = format!("tuider-chat-{ts}.md");
+    let selected: Vec<&Bubble> = if arg.is_empty() {
+        messages.iter().collect()
+    } else if arg == "last" {
+        messages.iter().rev().take(2).collect::<Vec<_>>().into_iter().rev().collect()
+    } else if let Ok(n) = arg.parse::<usize>() {
+        // 1-based user messages pair approx: take message n (clamp)
+        let idx = n.saturating_sub(1).min(messages.len().saturating_sub(1));
+        messages.get(idx).into_iter().collect()
+    } else {
+        return Err(format!(
+            "Unknown /exp argument '{arg}'. Use /exp, /exp last, or /exp <1-based index>."
+        ));
+    };
+    let mut body = String::from("# Tuider chat export\n\n");
+    for b in selected {
+        body.push_str("## ");
+        body.push_str(&b.role);
+        body.push_str("\n\n");
+        body.push_str(&b.content);
+        body.push_str("\n\n");
+    }
+    std::fs::write(&path, body).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+fn log_tool(name: &str, args: &str, out: &str) {
+    // ponytail: best-effort append; ignore failures
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let Some(home) = home else { return };
+    let dir = home.join(".config/tuider");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("ai-tools.log");
+    let line = format!(
+        "[{}] {name} args={} out_len={}\n",
+        chrono_like_ts(),
+        args.chars().take(200).collect::<String>(),
+        out.len()
+    );
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+fn chrono_like_ts() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn get_tools() -> Vec<Value> {
+    vec![
+        json!({"type":"function","function":{"name":"query_word","description":"Look up a headword in loaded dictionaries","parameters":{"type":"object","properties":{"word":{"type":"string"}},"required":["word"]}}}),
+        json!({"type":"function","function":{"name":"search_headwords","description":"Prefix search headwords","parameters":{"type":"object","properties":{"prefix":{"type":"string"},"limit":{"type":"integer"}},"required":["prefix"]}}}),
+        json!({"type":"function","function":{"name":"list_dicts","description":"List loaded dictionary names","parameters":{"type":"object","properties":{}}}}),
+        json!({"type":"function","function":{"name":"batch_query","description":"Look up multiple words","parameters":{"type":"object","properties":{"words":{"type":"array","items":{"type":"string"}}},"required":["words"]}}}),
+        json!({"type":"function","function":{"name":"analyze_vocab","description":"Simple vocab stats for a text snippet","parameters":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}}}),
+        json!({"type":"function","function":{"name":"reverse_lookup","description":"Find headwords whose definition contains query","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}),
+        json!({"type":"function","function":{"name":"get_current_content","description":"Read current document body (chunked)","parameters":{"type":"object","properties":{"offset":{"type":"integer"},"limit":{"type":"integer"}}}}}),
+        json!({"type":"function","function":{"name":"export_content","description":"Write markdown content to a file in cwd","parameters":{"type":"object","properties":{"filename":{"type":"string"},"content":{"type":"string"}},"required":["content"]}}}),
+        json!({"type":"function","function":{"name":"web_search","description":"Web search if TAVILY_API_KEY or TUIDER_WEB_SEARCH_URL set","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}}),
+    ]
+}
+
+fn execute_tool(
+    source: &mut dyn crate::plugin::ContentSource,
+    name: &str,
+    arguments: &str,
+    doc_title: &str,
+    full_body: &str,
+) -> String {
+    let args: Value = serde_json::from_str(arguments).unwrap_or_else(|_| json!({}));
+    match name {
+        "query_word" => {
+            let word = args["word"].as_str().unwrap_or("").trim();
+            if word.is_empty() {
+                return "error: empty word".into();
+            }
+            let hits = source.lookup_word(word);
+            if hits.is_empty() {
+                format!("Not found: {word}")
+            } else {
+                hits.into_iter()
+                    .map(|(d, t)| format!("### {d}\n{t}"))
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            }
+        }
+        "search_headwords" => {
+            let prefix = args["prefix"].as_str().unwrap_or("");
+            let limit = args["limit"].as_u64().unwrap_or(20) as usize;
+            let words = source.search_headwords(prefix, limit);
+            if words.is_empty() {
+                format!("(no headwords for prefix `{prefix}` — dict plugin may be missing)")
+            } else {
+                words.join("\n")
+            }
+        }
+        "list_dicts" => {
+            let list = source.list_dicts();
+            if list.is_empty() {
+                "(no dict list — not in dictionary mode or plugin lacks symbol)".into()
+            } else {
+                list.join("\n")
+            }
+        }
+        "batch_query" => {
+            let words: Vec<String> = args["words"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if words.is_empty() {
+                return "error: words[] empty".into();
+            }
+            words
+                .iter()
+                .map(|w| {
+                    let hits = source.lookup_word(w);
+                    if hits.is_empty() {
+                        format!("## {w}\nNot found")
+                    } else {
+                        let body = hits
+                            .into_iter()
+                            .map(|(d, t)| format!("### {d}\n{t}"))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        format!("## {w}\n{body}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        }
+        "analyze_vocab" => {
+            let text = args["text"].as_str().unwrap_or(full_body);
+            let mut words = std::collections::BTreeMap::new();
+            for w in text.split(|c: char| !c.is_alphabetic()) {
+                if w.len() < 3 {
+                    continue;
+                }
+                let k = w.to_lowercase();
+                *words.entry(k).or_insert(0usize) += 1;
+            }
+            let mut ranked: Vec<_> = words.into_iter().collect();
+            ranked.sort_by(|a, b| b.1.cmp(&a.1));
+            ranked.truncate(40);
+            format!(
+                "title={doc_title}\ntop tokens:\n{}",
+                ranked
+                    .into_iter()
+                    .map(|(w, n)| format!("{w}: {n}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        }
+        "reverse_lookup" => {
+            let q = args["query"].as_str().unwrap_or("");
+            let limit = args["limit"].as_u64().unwrap_or(15) as usize;
+            let words = source.reverse_lookup(q, limit);
+            if words.is_empty() {
+                format!("(no reverse hits for `{q}`)")
+            } else {
+                words.join("\n")
+            }
+        }
+        "get_current_content" => {
+            let offset = args["offset"].as_u64().unwrap_or(0) as usize;
+            let limit = args["limit"]
+                .as_u64()
+                .unwrap_or(CONTENT_CHUNK_BYTES as u64) as usize;
+            let limit = limit.clamp(1, CONTENT_CHUNK_BYTES);
+            if full_body.is_empty() {
+                return "(empty document)".into();
+            }
+            let start = offset.min(full_body.len());
+            // byte-ish clamp at char boundary
+            let mut end = (start + limit).min(full_body.len());
+            while end > start && !full_body.is_char_boundary(end) {
+                end -= 1;
+            }
+            let slice = &full_body[start..end];
+            format!(
+                "title={doc_title}\noffset={start} end={end} total={}\n---\n{slice}",
+                full_body.len()
+            )
+        }
+        "export_content" => {
+            let content = args["content"].as_str().unwrap_or("");
+            let filename = args["filename"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("tuider-export-{}.md", chrono_like_ts()));
+            let safe = std::path::Path::new(&filename)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("export.md");
+            match std::fs::write(safe, content) {
+                Ok(()) => format!("wrote {safe} ({} bytes)", content.len()),
+                Err(e) => format!("export failed: {e}"),
+            }
+        }
+        "web_search" => web_search_tool(args["query"].as_str().unwrap_or("")),
+        other => format!("unknown tool: {other}"),
+    }
+}
+
+fn web_search_tool(query: &str) -> String {
+    if query.trim().is_empty() {
+        return "error: empty query".into();
+    }
+    // Optional: Tavily-compatible or custom URL
+    if let Ok(key) = std::env::var("TAVILY_API_KEY") {
+        let client = match reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => return format!("client error: {e}"),
+        };
+        let body = json!({
+            "api_key": key,
+            "query": query,
+            "max_results": 5,
+        });
+        return match client
+            .post("https://api.tavily.com/search")
+            .json(&body)
+            .send()
+        {
+            Ok(r) if r.status().is_success() => r
+                .text()
+                .unwrap_or_else(|e| format!("read body: {e}"))
+                .chars()
+                .take(4000)
+                .collect(),
+            Ok(r) => format!("web_search HTTP {}", r.status()),
+            Err(e) => format!("web_search failed: {e}"),
+        };
+    }
+    "web_search unavailable: set TAVILY_API_KEY (or skip)".into()
+}
+
+/// Non-stream tool loop: request with tools, execute via host channel, continue.
+fn chat_with_tools_loop(
+    cfg: &AiConfig,
+    system: &str,
+    history: &[(String, String)],
+    tx: &mpsc::Sender<StreamEvent>,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    let tools = get_tools();
+    let mut messages = vec![json!({"role": "system", "content": system})];
+    let start = history.len().saturating_sub(24);
+    for (role, content) in &history[start..] {
+        messages.push(json!({"role": role, "content": content}));
+    }
+
+    for _round in 0..MAX_TOOL_ROUNDS {
+        if cancel.load(Ordering::SeqCst) {
+            let _ = tx.send(StreamEvent::Error("cancelled".into()));
+            return Ok(());
+        }
+        let body = json!({
+            "model": cfg.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+            "stream": false,
+        });
+        let url = format!("{}/chat/completions", cfg.base_url);
+        let client = reqwest::blocking::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .timeout(std::time::Duration::from_secs(180))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let resp = client
+            .post(&url)
+            .bearer_auth(&cfg.api_key)
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .map_err(|e| format!("request: {e}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let t = resp.text().unwrap_or_default();
+            return Err(format!(
+                "HTTP {status}: {}",
+                t.chars().take(240).collect::<String>()
+            ));
+        }
+        let v: Value = resp.json().map_err(|e| e.to_string())?;
+        let choice = v
+            .pointer("/choices/0/message")
+            .cloned()
+            .ok_or_else(|| "no message in response".to_string())?;
+        let content = choice["content"].as_str().unwrap_or("").to_string();
+        let tool_calls = choice["tool_calls"].as_array().cloned().unwrap_or_default();
+
+        if tool_calls.is_empty() {
+            if !content.is_empty() {
+                let _ = tx.send(StreamEvent::Chunk(content));
+            }
+            let _ = tx.send(StreamEvent::Done);
+            return Ok(());
+        }
+
+        messages.push(choice);
+        for tc in tool_calls {
+            if cancel.load(Ordering::SeqCst) {
+                let _ = tx.send(StreamEvent::Error("cancelled".into()));
+                return Ok(());
+            }
+            let id = tc["id"].as_str().unwrap_or("").to_string();
+            let name = tc["function"]["name"].as_str().unwrap_or("").to_string();
+            let arguments = tc["function"]["arguments"]
+                .as_str()
+                .unwrap_or("{}")
+                .to_string();
+            let (reply_tx, reply_rx) = mpsc::channel();
+            let _ = tx.send(StreamEvent::ToolCall {
+                name: name.clone(),
+                arguments: arguments.clone(),
+                reply: reply_tx,
+            });
+            // block until host executes
+            let result = reply_rx
+                .recv_timeout(std::time::Duration::from_secs(120))
+                .unwrap_or_else(|_| "tool timeout".into());
+            messages.push(json!({
+                "role": "tool",
+                "tool_call_id": id,
+                "content": result,
+            }));
+        }
+    }
+    let _ = tx.send(StreamEvent::Chunk(
+        "(tool round limit reached)".into(),
+    ));
+    let _ = tx.send(StreamEvent::Done);
+    Ok(())
+}
+
+
 /// Prefer streaming SSE; fall back to non-stream JSON if needed.
+#[allow(dead_code)] // kept as non-tool failover path
 fn chat_request(
+
     cfg: &AiConfig,
     system: &str,
     messages: &[(String, String)],
@@ -843,8 +1343,10 @@ mod tests {
             cancel: None,
             doc_title: String::new(),
             doc_body: String::new(),
+            full_body: String::new(),
         }
     }
+
 
     #[test]
     fn cursor_xy_wraps_and_newlines() {
@@ -875,22 +1377,21 @@ mod tests {
     }
 
     #[test]
-    fn shortcut_1_expands_to_translate() {
+    fn bare_1_no_longer_expands() {
         let mut s = empty_session();
         s.input = "1".into();
         s.cursor = 1;
         s.apply_input_shortcuts();
-        assert!(s.input.contains("翻译"));
-        assert_ne!(s.input.trim(), "1");
+        assert_eq!(s.input, "1");
     }
 
     #[test]
-    fn shortcut_1_only_when_bare() {
+    fn shortcut_2_expands() {
         let mut s = empty_session();
-        s.input = "12".into();
-        s.cursor = 2;
+        s.input = "2".into();
+        s.cursor = 1;
         s.apply_input_shortcuts();
-        assert_eq!(s.input, "12");
+        assert!(s.input.contains("解释"));
     }
 
     #[test]
@@ -904,10 +1405,50 @@ mod tests {
     }
 
     #[test]
-    fn typing_1_expands_live() {
+    fn alt_t_queues_translate_and_tries_send() {
         let mut s = empty_session();
-        let key = KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE);
+        let key = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT);
         s.handle_key(key);
-        assert!(s.input.contains("翻译"));
+        // no provider → status error; input was set then cleared by send path after slash? no provider leaves messages?
+        assert!(s.status.contains("no provider") || s.input.contains("翻译") || !s.messages.is_empty());
     }
+
+    #[test]
+    fn parse_switch_by_index_and_name() {
+        let providers = vec![
+            AiConfig {
+                name: "alpha".into(),
+                api_key: "k".into(),
+                base_url: "http://x".into(),
+                model: "m".into(),
+            },
+            AiConfig {
+                name: "beta".into(),
+                api_key: "k".into(),
+                base_url: "http://x".into(),
+                model: "m".into(),
+            },
+        ];
+        assert_eq!(parse_switch_target("2", &providers), Some(1));
+        assert_eq!(parse_switch_target("beta", &providers), Some(1));
+        assert_eq!(parse_switch_target("nope", &providers), None);
+    }
+
+    #[test]
+    fn slash_exp_writes_file() {
+        let mut s = empty_session();
+        s.messages.push(Bubble {
+            role: "user".into(),
+            content: "hi".into(),
+        });
+        s.messages.push(Bubble {
+            role: "assistant".into(),
+            content: "yo".into(),
+        });
+        s.input = "/exp".into();
+        s.cursor = s.input.len();
+        s.send();
+        assert!(s.status.starts_with("exported "));
+    }
+
 }

@@ -177,11 +177,26 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
     } else {
         app.set_list_area(None);
-        let layout =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
-        app.set_content_area(Some(layout[0]));
-        draw_content(frame, layout[0], app);
-        draw_status(frame, layout[1], app);
+        // reuse draw_right so Ctrl+B works with sidebar off
+        draw_right(frame, area, app);
+        // content_area for page steps — bottom status row reserved when no panel
+        if !app.dict_panel_open() {
+            let layout =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
+            app.set_content_area(Some(layout[0]));
+        } else {
+            let panel_h = (app.dict_panel_names().len() as u16)
+                .saturating_add(2)
+                .clamp(3, 8)
+                .min(area.height.saturating_sub(2));
+            let layout = Layout::vertical([
+                Constraint::Length(panel_h),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
+            .split(area);
+            app.set_content_area(Some(layout[1]));
+        }
     }
 
     if app.nav_open() {
@@ -194,9 +209,60 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 fn draw_right(frame: &mut Frame, area: Rect, app: &App) {
-    let layout = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
-    draw_content(frame, layout[0], app);
-    draw_status(frame, layout[1], app);
+    if app.dict_panel_open() {
+        // ponytail: Clear full area avoids ghost after close (UI-02)
+        frame.render_widget(Clear, area);
+        let panel_h = (app.dict_panel_names().len() as u16)
+            .saturating_add(2)
+            .clamp(3, 8)
+            .min(area.height.saturating_sub(2));
+        let layout = Layout::vertical([
+            Constraint::Length(panel_h),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(area);
+        draw_dict_panel(frame, layout[0], app);
+        draw_content(frame, layout[1], app);
+        draw_status(frame, layout[2], app);
+    } else {
+        let layout = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
+        draw_content(frame, layout[0], app);
+        draw_status(frame, layout[1], app);
+    }
+}
+
+fn draw_dict_panel(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = app.theme();
+    let names = app.dict_panel_names();
+    let sel = app.dict_panel_sel();
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let items: Vec<ListItem> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let style = if i == sel {
+                theme.list_selected()
+            } else {
+                Style::default().fg(theme.list_text())
+            };
+            let mut text = format!(" {name} ");
+            if i == sel && inner_width > 0 {
+                let w = text.chars().count();
+                if w < inner_width {
+                    text.push_str(&" ".repeat(inner_width - w));
+                }
+            }
+            ListItem::new(Line::from(Span::styled(text, style)))
+        })
+        .collect();
+    let list = List::new(items).block(
+        Block::default()
+            .title(" Dictionaries · Enter select · Esc close ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border())),
+    );
+    frame.render_widget(list, area);
 }
 
 fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
@@ -307,8 +373,9 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
             Line::from(section("  基本操作")),
             Line::from(vec![key("    输入字符  "), desc("过滤侧栏条目")]),
             Line::from(vec![key("    ↑ / ↓    "), desc("浏览列表（侧栏显示时）")]),
-            Line::from(vec![key("    Enter    "), desc("打开选中文档")]),
-            Line::from(vec![key("    Esc      "), desc("清空过滤")]),
+            Line::from(vec![key("    Enter    "), desc("打开 / 重载选中")]),
+            Line::from(vec![key("    a        "), desc("抓取全文（状态栏提示）")]),
+            Line::from(vec![key("    [ / ]    "), desc("跳到上一/下一章节")]),
             Line::from(""),
             Line::from(section("  快捷键")),
             Line::from(vec![key("    Ctrl+F   "), desc("显示/隐藏侧栏")]),
@@ -316,7 +383,7 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
             Line::from(vec![key("    /        "), desc("正文 vim 搜索")]),
             Line::from(vec![key("    n / N    "), desc("下一/上一匹配")]),
             Line::from(vec![key("    v / V    "), desc("字符/行 visual · y 复制")]),
-            Line::from(vec![key("    f / o    "), desc("链接列表 / 目录大纲")]),
+            Line::from(vec![key("    f / o    "), desc("链接 / 大纲(打字过滤)")]),
             Line::from(vec![key("    Alt+f    "), desc("consult 搜索预览跳转")]),
             Line::from(vec![key("    O        "), desc("打开当前文件目录")]),
             Line::from(vec![key("    ?        "), desc("帮助")]),
@@ -524,16 +591,24 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         ]
     } else {
         &[
-            ("Type", "Filter sidebar"),
+            ("Type", "Filter sidebar (live)"),
             ("↑/↓", "List (sidebar on)"),
-            ("Ctrl+F", "Toggle sidebar"),
-            ("Ctrl+S", "Search left/top"),
+            ("Ctrl+F", "Toggle sidebar (not search layout)"),
+            ("Ctrl+S", "Search left/top layout"),
+            ("Ctrl+B", "Dict picker panel"),
+            ("Ctrl+Y", "Copy definition (OSC52)"),
+            ("Ctrl+U", "Clear filter, keep result"),
+            ("Ctrl+W", "Delete filter word"),
+            ("Esc", "Clear filter / result / panel"),
+            ("Tab", "Cycle dict / source layer"),
             ("/", "In-content search"),
-            ("v/V", "Visual line select"),
+            ("a", "Fetch full article (plugins)"),
+            ("[/]", "Prev/next section"),
+            ("o", "Outline / filter headings"),
+            ("v/V", "Visual select"),
             ("y", "Yank selection (OSC 52)"),
             ("Alt+L", "AI overlay (if built)"),
             ("Alt+Shift+L", "AI maximize"),
-            ("Esc", "Clear filter / visual"),
             ("Ctrl+Q", "Quit"),
             ("?", "Close help"),
         ]

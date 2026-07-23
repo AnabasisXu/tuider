@@ -13,6 +13,14 @@ use tuider_plugin_api::{
 
 /// Optional: `extern "C" fn tuider_source_cycle(src: *mut c_void) -> c_int` (1 = cycled).
 type FnCycle = unsafe extern "C" fn(*mut c_void) -> c_int;
+/// Optional: `extern "C" fn tuider_source_action(src, index, action) -> c_int` (1 = body dirty).
+type FnAction = unsafe extern "C" fn(*mut c_void, usize, *const c_char) -> c_int;
+type FnDictLookup = tuider_plugin_api::FnDictLookup;
+type FnDictSearch = tuider_plugin_api::FnDictSearch;
+type FnDictReverse = tuider_plugin_api::FnDictReverse;
+type FnDictList = tuider_plugin_api::FnDictList;
+type FnDictSelect = tuider_plugin_api::FnDictSelect;
+
 
 pub struct LoadedPlugin {
     #[allow(dead_code)] // kept for skip/debug messages
@@ -29,7 +37,14 @@ pub struct LoadedPlugin {
     load_body: FnLoadBody,
     string_free: FnStringFree,
     cycle: Option<FnCycle>,
+    action: Option<FnAction>,
+    dict_lookup: Option<FnDictLookup>,
+    dict_search: Option<FnDictSearch>,
+    dict_reverse: Option<FnDictReverse>,
+    dict_list: Option<FnDictList>,
+    dict_select: Option<FnDictSelect>,
 }
+
 
 pub struct DynSource {
     plugin: Arc<LoadedPlugin>,
@@ -107,6 +122,109 @@ impl DynSource {
         self.refresh_meta();
         true
     }
+
+    fn action(&mut self, index: usize, action: &str) -> bool {
+        let Some(act) = self.plugin.action else {
+            return false;
+        };
+        let Ok(c) = CString::new(action.replace('\0', "")) else {
+            return false;
+        };
+        unsafe { act(self.handle, index, c.as_ptr()) != 0 }
+    }
+
+    fn take_cstr(&self, p: *mut c_char) -> Option<String> {
+        if p.is_null() {
+            return None;
+        }
+        let s = unsafe { CStr::from_ptr(p) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe { (self.plugin.string_free)(p) };
+        Some(s)
+    }
+
+    fn dict_lookup(&mut self, word: &str) -> Vec<(String, String)> {
+        let Some(f) = self.plugin.dict_lookup else {
+            return Vec::new();
+        };
+        let Ok(c) = CString::new(word.replace('\0', "")) else {
+            return Vec::new();
+        };
+        let raw = unsafe { f(self.handle, c.as_ptr()) };
+        let Some(s) = self.take_cstr(raw) else {
+            return Vec::new();
+        };
+        // format: "DICT_TITLE\ttext" lines, or plain single block
+        if s.contains('\t') {
+            s.lines()
+                .filter_map(|line| {
+                    let (a, b) = line.split_once('\t')?;
+                    Some((a.to_string(), b.to_string()))
+                })
+                .collect()
+        } else if s.is_empty() {
+            Vec::new()
+        } else {
+            vec![(self.title_cache.clone(), s)]
+        }
+    }
+
+    fn dict_search(&mut self, prefix: &str, limit: usize) -> Vec<String> {
+        let Some(f) = self.plugin.dict_search else {
+            return Vec::new();
+        };
+        let Ok(c) = CString::new(prefix.replace('\0', "")) else {
+            return Vec::new();
+        };
+        let raw = unsafe { f(self.handle, c.as_ptr(), limit) };
+        self.take_cstr(raw)
+            .map(|s| s.lines().map(str::to_owned).filter(|x| !x.is_empty()).collect())
+            .unwrap_or_default()
+    }
+
+    fn dict_reverse(&mut self, query: &str, limit: usize) -> Vec<String> {
+        let Some(f) = self.plugin.dict_reverse else {
+            return Vec::new();
+        };
+        let Ok(c) = CString::new(query.replace('\0', "")) else {
+            return Vec::new();
+        };
+        let raw = unsafe { f(self.handle, c.as_ptr(), limit) };
+        self.take_cstr(raw)
+            .map(|s| s.lines().map(str::to_owned).filter(|x| !x.is_empty()).collect())
+            .unwrap_or_default()
+    }
+
+    fn dict_list(&self) -> Vec<String> {
+        let Some(f) = self.plugin.dict_list else {
+            return Vec::new();
+        };
+        let raw = unsafe { f(self.handle) };
+        if raw.is_null() {
+            return Vec::new();
+        }
+        let s = unsafe { CStr::from_ptr(raw) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe { (self.plugin.string_free)(raw) };
+        s.lines()
+            .map(str::to_owned)
+            .filter(|x| !x.is_empty())
+            .collect()
+    }
+
+    fn dict_select(&mut self, index: usize) -> bool {
+        let Some(f) = self.plugin.dict_select else {
+            return false;
+        };
+        if unsafe { f(self.handle, index) } == 0 {
+            return false;
+        }
+        self.refresh_meta();
+        true
+    }
+
 }
 
 /// Host ContentSource: plugin text → ratatui Lines.
@@ -146,9 +264,20 @@ impl crate::plugin::ContentSource for HostSource {
                     .get(index)
                     .map(|s| s.as_str())
                     .unwrap_or("?");
-                let lines = render_plugin_body(&text, width.max(20));
+                let (body, hint) = split_status_trailer(&text);
+                let w = width.max(20);
+                let (lines, links, headings) = render_plugin_body_doc(body, w);
                 let n = lines.len();
-                crate::plugin::LoadResult::plain(lines, format!("{name}  ({n} lines)"))
+                let status = match hint {
+                    Some(h) => format!("{name}  ({n} lines)  ·  {h}"),
+                    None => format!("{name}  ({n} lines)"),
+                };
+                crate::plugin::LoadResult {
+                    lines,
+                    status,
+                    links,
+                    headings,
+                }
             }
             Err(e) => crate::plugin::LoadResult::plain(
                 vec![ratatui::text::Line::from(format!("error: {e}"))],
@@ -164,22 +293,272 @@ impl crate::plugin::ContentSource for HostSource {
         self.names = self.inner.entries_cache.clone();
         true
     }
+    fn action(&mut self, index: usize, action: &str) -> bool {
+        self.inner.action(index, action)
+    }
+    fn lookup_word(&mut self, word: &str) -> Vec<(String, String)> {
+        self.inner.dict_lookup(word)
+    }
+    fn search_headwords(&mut self, prefix: &str, limit: usize) -> Vec<String> {
+        self.inner.dict_search(prefix, limit)
+    }
+    fn reverse_lookup(&mut self, query: &str, limit: usize) -> Vec<String> {
+        self.inner.dict_reverse(query, limit)
+    }
+    fn list_dicts(&self) -> Vec<String> {
+        self.inner.dict_list()
+    }
+    fn select_dict(&mut self, index: usize) -> bool {
+        if !self.inner.dict_select(index) {
+            return false;
+        }
+        self.title = self.inner.title_cache.clone();
+        self.names = self.inner.entries_cache.clone();
+        true
+    }
+    fn plain_body(&mut self, index: usize) -> String {
+        match self.inner.load_text(index, 100) {
+            Ok(text) => {
+                let (body, _) = split_status_trailer(&text);
+                strip_body_to_plain(body)
+            }
+            Err(e) => e,
+        }
+    }
 }
 
+
+#[cfg_attr(not(test), allow(dead_code))]
 fn render_plugin_body(text: &str, width: usize) -> Vec<ratatui::text::Line<'static>> {
+    render_plugin_body_doc(text, width).0
+}
+
+fn strip_body_to_plain(text: &str) -> String {
     if let Some(rest) = text.strip_prefix(BODY_HTML_V1_PREFIX) {
-        // payload: <css>\n\x1e\n<html>
+        let html = rest.split_once("\n\u{1e}\n").map(|(_, h)| h).unwrap_or(rest);
+        return html_to_rough_plain(html);
+    }
+    text.to_string()
+}
+
+fn html_to_rough_plain(html: &str) -> String {
+    // ponytail: tag strip only; good enough for CLI/AI/clipboard
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for ch in html.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out.replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+}
+
+
+fn render_plugin_body_doc(
+    text: &str,
+    width: usize,
+) -> (
+    Vec<ratatui::text::Line<'static>>,
+    Vec<crate::plugin::LinkEntry>,
+    Vec<crate::plugin::HeadingEntry>,
+) {
+    if let Some(rest) = text.strip_prefix(BODY_HTML_V1_PREFIX) {
         let (css_src, html) = match rest.split_once("\n\u{1e}\n") {
             Some((c, h)) => (c, h),
             None => ("", rest),
         };
         let table = crate::html_css::StyleTable::parse(css_src);
-        return crate::html_render::html_to_lines(html, &table);
+        let (lines, mut headings) = crate::html_render::html_to_doc(html, &table);
+        // if HTML classes missed, recover `1) 2) a)` from rendered lines
+        if headings.len() < 2 {
+            let fb = outline_from_lines(&lines);
+            if fb.len() > headings.len() {
+                headings = fb;
+            }
+        }
+        if headings.len() > 120 {
+            headings.truncate(120);
+        }
+        return (lines, Vec::new(), headings);
     }
     if looks_like_md(text) {
-        crate::md::render_md_width(text, width)
+        let doc = crate::md::render_md_doc(text, width);
+        let headings = if doc.headings.is_empty() {
+            outline_from_lines(&doc.lines)
+        } else {
+            doc.headings
+        };
+        (doc.lines, doc.links, headings)
     } else {
-        crate::md::render_txt_width(text, width)
+        let lines = crate::md::render_txt_width(text, width);
+        let headings = outline_from_lines(&lines);
+        (lines, Vec::new(), headings)
+    }
+}
+
+/// Fallback outline when body has no md/HTML headings (code / plain / sparse dict).
+pub fn outline_from_plain_lines(
+    lines: &[ratatui::text::Line<'static>],
+) -> Vec<crate::plugin::HeadingEntry> {
+    outline_from_lines(lines)
+}
+
+fn outline_from_lines(lines: &[ratatui::text::Line<'static>]) -> Vec<crate::plugin::HeadingEntry> {
+    let mut out = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let t: String = line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+            .trim()
+            .to_string();
+        if t.is_empty() {
+            continue;
+        }
+        let plain = t.trim_start_matches(['•', ' ', '\t']);
+        // numbered sense labels: 1) 2) a) b) 1. ①
+        if let Some(level) = numbered_sense_level(plain) {
+            let text = if plain.chars().count() > 72 {
+                let mut s: String = plain.chars().take(71).collect();
+                s.push('…');
+                s
+            } else {
+                plain.to_string()
+            };
+            out.push(crate::plugin::HeadingEntry {
+                level,
+                text,
+                line: i,
+            });
+            if out.len() >= 400 {
+                break;
+            }
+            continue;
+        }
+        let level = outline_level(plain);
+        if level == 0 {
+            continue;
+        }
+        let text = plain.trim_end_matches(['{', ' ', '\t']).to_string();
+        if text.chars().count() < 2 {
+            continue;
+        }
+        out.push(crate::plugin::HeadingEntry {
+            level,
+            text,
+            line: i,
+        });
+        if out.len() >= 400 {
+            break;
+        }
+    }
+    out
+}
+
+fn numbered_sense_level(s: &str) -> Option<u8> {
+    let mut it = s.chars().peekable();
+    let Some(c0) = it.next() else {
+        return None;
+    };
+    if c0.is_ascii_digit() {
+        while it.peek().is_some_and(|c| c.is_ascii_digit()) {
+            it.next();
+        }
+        return match it.next() {
+            Some(')' | '.' | '．' | '。' | '、' | '）') => Some(1),
+            _ => None,
+        };
+    }
+    if c0.is_ascii_lowercase() {
+        return match it.next() {
+            Some(')' | '.' | '．' | '）') => Some(2),
+            _ => None,
+        };
+    }
+    if matches!(c0, '①' | '②' | '③' | '④' | '⑤' | '⑥' | '⑦' | '⑧' | '⑨' | '⑩') {
+        return Some(1);
+    }
+    None
+}
+
+fn outline_level(s: &str) -> u8 {
+    // code / rust / py / js / go-ish defs
+    let lower = s.to_ascii_lowercase();
+    let code_kw = [
+        "fn ",
+        "pub fn ",
+        "async fn ",
+        "pub async fn ",
+        "struct ",
+        "pub struct ",
+        "enum ",
+        "pub enum ",
+        "impl ",
+        "trait ",
+        "pub trait ",
+        "mod ",
+        "pub mod ",
+        "class ",
+        "def ",
+        "async def ",
+        "function ",
+        "export function ",
+        "export const ",
+        "const ",
+        "type ",
+        "interface ",
+        "func ",
+        "package ",
+    ];
+    if code_kw.iter().any(|k| lower.starts_with(k)) {
+        return 2;
+    }
+    // markdown-ish leftovers
+    if s.starts_with("# ") {
+        return 1;
+    }
+    if s.starts_with("## ") {
+        return 2;
+    }
+    if s.starts_with("### ") {
+        return 3;
+    }
+    // dict-ish: short headword lines (no sentence punctuation dump)
+    if s.chars().count() <= 40
+        && !s.contains('.')
+        && !s.contains('。')
+        && s.chars().any(|c| c.is_alphanumeric())
+        && !s.starts_with('•')
+    {
+        let spaces = s.chars().filter(|c| c.is_whitespace()).count();
+        if spaces <= 3 {
+            return 2;
+        }
+    }
+    0
+}
+
+/// Plugin may append `\n\u{1f}STATUS:hint` — host puts hint in status, not body.
+fn split_status_trailer(text: &str) -> (&str, Option<&str>) {
+    const MARK: &str = "\n\u{1f}STATUS:";
+    if let Some(i) = text.rfind(MARK) {
+        let body = &text[..i];
+        let hint = text[i + MARK.len()..].trim();
+        if hint.is_empty() {
+            (body, None)
+        } else {
+            (body, Some(hint))
+        }
+    } else {
+        (text, None)
     }
 }
 
@@ -189,7 +568,7 @@ fn looks_like_md(t: &str) -> bool {
 
 #[cfg(test)]
 mod body_render_tests {
-    use super::render_plugin_body;
+    use super::{render_plugin_body, split_status_trailer};
     use ratatui::style::Modifier;
     #[test]
     fn html_v1_applies_css_and_builtin_bold() {
@@ -207,11 +586,38 @@ mod body_render_tests {
             })
         });
         assert!(has_bold, "expected bold style on 'bold'");
-        // CSS italic + fg applied (color may be lifted for terminal contrast)
-        let quoted = lines.iter().flat_map(|l| l.spans.iter()).find(|s| s.content.contains("quoted"));
+        let quoted = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.contains("quoted"));
         let q = quoted.expect("quoted span");
         assert!(q.style.add_modifier.contains(Modifier::ITALIC), "css italic");
         assert!(q.style.fg.is_some(), "css fg color");
+    }
+
+    #[test]
+    fn status_trailer_stripped() {
+        let (b, h) = split_status_trailer("hello\n\u{1f}STATUS:a 抓取全文");
+        assert_eq!(b, "hello");
+        assert_eq!(h, Some("a 抓取全文"));
+        let (b2, h2) = split_status_trailer("plain");
+        assert_eq!(b2, "plain");
+        assert!(h2.is_none());
+    }
+
+    #[test]
+    fn outline_from_code_lines() {
+        use ratatui::text::{Line, Span};
+        let lines = vec![
+            Line::from(Span::raw("use std::io;")),
+            Line::from(Span::raw("fn main() {")),
+            Line::from(Span::raw("    println!(\"hi\");")),
+            Line::from(Span::raw("}")),
+            Line::from(Span::raw("pub struct App {")),
+        ];
+        let hs = super::outline_from_lines(&lines);
+        assert!(hs.iter().any(|h| h.text.contains("fn main")), "{hs:?}");
+        assert!(hs.iter().any(|h| h.text.contains("pub struct App")), "{hs:?}");
     }
 }
 
@@ -294,6 +700,30 @@ fn load_one(path: &Path) -> Result<LoadedPlugin, String> {
             string_free: *string_free,
             cycle: lib
                 .get::<FnCycle>(b"tuider_source_cycle\0")
+                .ok()
+                .map(|s| *s),
+            action: lib
+                .get::<FnAction>(b"tuider_source_action\0")
+                .ok()
+                .map(|s| *s),
+            dict_lookup: lib
+                .get::<FnDictLookup>(b"tuider_dict_lookup\0")
+                .ok()
+                .map(|s| *s),
+            dict_search: lib
+                .get::<FnDictSearch>(b"tuider_dict_search\0")
+                .ok()
+                .map(|s| *s),
+            dict_reverse: lib
+                .get::<FnDictReverse>(b"tuider_dict_reverse\0")
+                .ok()
+                .map(|s| *s),
+            dict_list: lib
+                .get::<FnDictList>(b"tuider_dict_list\0")
+                .ok()
+                .map(|s| *s),
+            dict_select: lib
+                .get::<FnDictSelect>(b"tuider_dict_select\0")
                 .ok()
                 .map(|s| *s),
             _lib: lib,

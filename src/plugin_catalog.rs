@@ -44,6 +44,7 @@ fn claims_code(args: &[String]) -> bool {
 fn claims_dict(args: &[String]) -> bool {
     args.iter().any(|a| a == "-g" || a == "--group")
         || args.iter().any(|a| a.ends_with(".mdx") || a.ends_with(".MDX"))
+    // -s alone does not claim; needs -g or .mdx
 }
 
 /// Static catalog (order = missing-hint priority: url → hn → code → dict).

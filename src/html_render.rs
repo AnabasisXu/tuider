@@ -1,9 +1,10 @@
-//! Dict HTML → ratatui Lines (vendored from mdx-tui mdx-core).
+//! Dict/code HTML → ratatui Lines (+ outline for host `o` jump).
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::html_css::{Resolved, StyleTable, TermStyle};
+use crate::plugin::HeadingEntry;
 
 /// Convert dictionary HTML directly into styled ratatui Lines.
 ///
@@ -11,10 +12,111 @@ use crate::html_css::{Resolved, StyleTable, TermStyle};
 /// class/tag rules from the dictionary `css` drive colors, falling back to
 /// built-in defaults for anything unmatched. Pass `&StyleTable::default()` for
 /// dictionaries without a stylesheet.
+#[allow(dead_code)] // public API / tests
 pub fn html_to_lines(html: &str, css: &StyleTable) -> Vec<Line<'static>> {
+    html_to_doc(html, css).0
+}
+
+/// Lines + outline (H1–H6 and dict sense markers: pos/df/se2/…).
+pub fn html_to_doc(html: &str, css: &StyleTable) -> (Vec<Line<'static>>, Vec<HeadingEntry>) {
     let mut r = Renderer::new(css);
     r.run(html);
-    r.finish()
+    r.finish_doc()
+}
+
+/// Dict sense / section markers (class substrings, lowercase).
+fn sense_level(classes: &[&str]) -> Option<u8> {
+    let mut best: Option<u8> = None;
+    for c in classes {
+        let c = c.to_ascii_lowercase();
+        // noise / layout helpers
+        if c.contains("offset")
+            || c.contains("btn")
+            || c.contains("icon")
+            || c.contains("param")
+            || c.contains("favorite")
+            || c.contains("toggle")
+            || c.contains("blank")
+            || c == "corrse2firstline"
+            || c == "example"
+            || c == "ex"
+            || c == "ch"
+            || c == "source"
+            || c == "underline"
+            || c == "error"
+        {
+            continue;
+        }
+        // 英语常用词疑难用法手册: senselevel-1 / senselevel-2
+        if let Some(rest) = c.strip_prefix("senselevel-") {
+            if let Ok(n) = rest.parse::<u8>() {
+                let l = n.clamp(1, 6);
+                best = Some(match best {
+                    Some(b) => b.min(l),
+                    None => l,
+                });
+                continue;
+            }
+        }
+        // level-N container sometimes wraps sense; prefer senselevel; treat level-N as weak
+        if let Some(rest) = c.strip_prefix("level-") {
+            if rest.chars().all(|ch| ch.is_ascii_digit()) {
+                // skip pure layout level wrappers — sense text is in senselevel
+                continue;
+            }
+        }
+        let lv = if c == "word" || c == "hw" || c == "headword" {
+            Some(1)
+        } else if c == "pos"
+            || c == "partofspeech"
+            || c == "word-class"
+            || c == "wordclass"
+            || (c.ends_with("pos") && c.len() <= 5)
+        {
+            Some(1)
+        } else if c == "se2"
+            || c == "sense"
+            || c == "sensenum"
+            || c == "defnum"
+            || c == "ordinal"
+            || (c.starts_with("se2") && c != "se2g" && c != "se2gone")
+        {
+            Some(2)
+        } else if c == "df"
+            || c == "def"
+            || c == "defcn"
+            || c == "meaning"
+            || c == "translation"
+            || (c.starts_with("def") && !c.contains("btn"))
+        {
+            Some(3)
+        } else {
+            None
+        };
+        if let Some(l) = lv {
+            best = Some(match best {
+                Some(b) => b.min(l),
+                None => l,
+            });
+        }
+    }
+    best
+}
+
+/// Prefer `1) …` / `a) …` label + short preview for outline list.
+fn outline_label(raw: &str) -> String {
+    let t = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if t.is_empty() {
+        return t;
+    }
+    // keep numbered / lettered sense markers prominent
+    let max = 72usize;
+    if t.chars().count() <= max {
+        return t;
+    }
+    let mut s: String = t.chars().take(max.saturating_sub(1)).collect();
+    s.push('…');
+    s
 }
 
 /// One entry on the element stack: the tag that opened it plus the style state
@@ -41,6 +143,9 @@ struct Renderer<'a> {
     stack: Vec<Frame>,
     /// Depth of the current skipped subtree; >0 means drop all text.
     skip: usize,
+    headings: Vec<HeadingEntry>,
+    /// Active heading capture: (level, start_line, text)
+    heading_cap: Option<(u8, usize, String)>,
 }
 
 impl<'a> Renderer<'a> {
@@ -52,6 +157,8 @@ impl<'a> Renderer<'a> {
             buf: String::new(),
             stack: Vec::new(),
             skip: 0,
+            headings: Vec::new(),
+            heading_cap: None,
         }
     }
 
@@ -127,7 +234,22 @@ impl<'a> Renderer<'a> {
                 self.break_line();
                 return;
             }
-            "link" | "meta" | "img" | "hr" | "input" | "col" | "wbr" => return,
+            "img" => {
+                // R-01: emit alt (or title) so dict images leave a text trace.
+                if self.skip == 0 {
+                    if let Some(alt) = attr_value(raw, "alt").or_else(|| attr_value(raw, "title")) {
+                        let alt = alt.trim();
+                        if !alt.is_empty() {
+                            self.flush_text();
+                            self.buf.push('[');
+                            self.buf.push_str(alt);
+                            self.buf.push(']');
+                        }
+                    }
+                }
+                return;
+            }
+            "link" | "meta" | "hr" | "input" | "col" | "wbr" => return,
             _ => {}
         }
 
@@ -161,17 +283,28 @@ impl<'a> Renderer<'a> {
         }
 
         // Block-level and structural tags force line breaks / bullets.
+        // table/tr = row lines; td/th = cell separators (R-02 simple grid).
         let block = resolved.style.block
-            || matches!(name, "p" | "div" | "h1" | "h2" | "h3" | "li" | "ul" | "ol");
+            || matches!(
+                name,
+                "p" | "div" | "h1" | "h2" | "h3" | "li" | "ul" | "ol" | "table" | "tr" | "thead"
+                    | "tbody"
+            );
         if !skipped && self.skip == 0 && block {
             self.break_line();
         }
         if !skipped && self.skip == 0 && name == "li" {
             self.buf.push_str("• ");
         }
+        // ponytail: no column align; cells separated by " | "
+        if !skipped && self.skip == 0 && matches!(name, "td" | "th") {
+            if !self.buf.is_empty() || !self.spans.is_empty() {
+                self.buf.push_str(" | ");
+            }
+        }
 
         // Built-in emphasis (used only when no CSS rule speaks to this element).
-        let heading = matches!(name, "h1" | "h2" | "h3");
+        let heading = matches!(name, "h1" | "h2" | "h3" | "h4" | "h5" | "h6");
         let bold = matches!(name, "b" | "strong")
             || class_refs.iter().any(|c| c.contains("bold"));
         let italic = matches!(name, "i" | "em");
@@ -181,12 +314,41 @@ impl<'a> Renderer<'a> {
             self.skip += 1;
         }
 
+        // outline: HTML headings OR dict sense classes (pos/df/se2…)
+        let mut opened_outline = false;
+        if !skipped && self.skip == 0 && self.heading_cap.is_none() {
+            if heading {
+                let level = match name {
+                    "h1" => 1,
+                    "h2" => 2,
+                    "h3" => 3,
+                    "h4" => 4,
+                    "h5" => 5,
+                    _ => 6,
+                };
+                self.heading_cap = Some((level, self.lines.len(), String::new()));
+                opened_outline = true;
+            } else if let Some(level) = sense_level(&class_refs) {
+                let is_wrap = class_refs.iter().any(|c| {
+                    let c = c.to_ascii_lowercase();
+                    matches!(
+                        c.as_str(),
+                        "se2g" | "se2gone" | "posg" | "egblock" | "sg" | "se1" | "sgposdiv"
+                    ) || c.ends_with('g') && (c.starts_with("se") || c.starts_with("pos"))
+                });
+                if !is_wrap {
+                    self.heading_cap = Some((level, self.lines.len(), String::new()));
+                    opened_outline = true;
+                }
+            }
+        }
+
         self.stack.push(Frame {
             tag: name.to_string(),
             bold,
             italic,
             underline,
-            heading,
+            heading: heading || opened_outline,
             css: resolved.matched.then_some(resolved.style),
             skipped,
         });
@@ -198,7 +360,10 @@ impl<'a> Renderer<'a> {
         let Some(pos) = pos else {
             // Unbalanced close (e.g. </p> with no <p>): treat block closers as
             // line breaks so layout survives.
-            if matches!(name, "p" | "div" | "h1" | "h2" | "h3" | "ul" | "ol") {
+            if matches!(
+                name,
+                "p" | "div" | "h1" | "h2" | "h3" | "ul" | "ol" | "table" | "tr" | "thead" | "tbody"
+            ) {
                 self.break_line();
                 self.blank();
             } else if name == "li" {
@@ -206,7 +371,6 @@ impl<'a> Renderer<'a> {
             }
             return;
         };
-
         // Flush the text run BEFORE popping: it belongs to the element being
         // closed and must be styled with that element's frame still on the stack.
         if self.skip == 0 {
@@ -230,16 +394,43 @@ impl<'a> Renderer<'a> {
             return;
         }
 
+        // close outline capture for this frame if we opened it
+        if frame.heading {
+            if let Some((level, line, text)) = self.heading_cap.take() {
+                let t = outline_label(&text);
+                if t.chars().count() >= 1 {
+                    self.headings.push(HeadingEntry {
+                        level,
+                        text: t,
+                        line,
+                    });
+                }
+            }
+        }
+
         // Block-level closers break the line; paragraph/heading add a blank.
         let block = frame.css.as_ref().is_some_and(|s| s.block)
             || matches!(
                 name,
-                "p" | "div" | "h1" | "h2" | "h3" | "li" | "ul" | "ol"
+                "p" | "div"
+                    | "h1"
+                    | "h2"
+                    | "h3"
+                    | "h4"
+                    | "h5"
+                    | "h6"
+                    | "li"
+                    | "ul"
+                    | "ol"
+                    | "table"
+                    | "tr"
+                    | "thead"
+                    | "tbody"
             );
         if block {
             self.break_line();
         }
-        if matches!(name, "p" | "h1" | "h2" | "h3" | "ul" | "ol") {
+        if matches!(name, "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol" | "table") {
             self.blank();
         }
     }
@@ -308,6 +499,9 @@ impl<'a> Renderer<'a> {
         if self.buf.is_empty() {
             return;
         }
+        if let Some((_, _, t)) = self.heading_cap.as_mut() {
+            t.push_str(&self.buf);
+        }
         let style = self.style();
         self.spans
             .push(Span::styled(std::mem::take(&mut self.buf), style));
@@ -329,12 +523,17 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    fn finish(mut self) -> Vec<Line<'static>> {
+    #[allow(dead_code)]
+    fn finish(self) -> Vec<Line<'static>> {
+        self.finish_doc().0
+    }
+
+    fn finish_doc(mut self) -> (Vec<Line<'static>>, Vec<HeadingEntry>) {
         self.break_line();
         while self.lines.last().is_some_and(|l| l.spans.is_empty()) {
             self.lines.pop();
         }
-        self.lines
+        (self.lines, self.headings)
     }
 }
 
@@ -390,6 +589,29 @@ fn extract_classes(tag: &str) -> Vec<String> {
         .collect()
 }
 
+/// First `name="…"` / `name='…'` attribute value (case-insensitive name).
+fn attr_value(tag: &str, name: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    let key = format!("{name}=");
+    let Some(pos) = lower.find(&key) else {
+        return None;
+    };
+    let rest = &tag[pos + key.len()..];
+    let mut chars = rest.chars();
+    let q = chars.next()?;
+    if q != '"' && q != '\'' {
+        return None;
+    }
+    let mut out = String::new();
+    for c in chars {
+        if c == q {
+            return Some(out);
+        }
+        out.push(c);
+    }
+    None
+}
+
 fn decode_entity(entity: &str) -> Option<char> {
     match entity {
         "amp" => Some('&'),
@@ -423,6 +645,62 @@ mod tests {
         super::html_to_lines(html, &StyleTable::default())
     }
 
+    #[test]
+    fn html_doc_indexes_headings() {
+        let (lines, hs) = super::html_to_doc(
+            "<h1>Word</h1><p>def</p><h2>Sense</h2><p>more</p>",
+            &StyleTable::default(),
+        );
+        assert!(!lines.is_empty());
+        assert!(hs.iter().any(|h| h.text == "Word" && h.level == 1), "{hs:?}");
+        assert!(hs.iter().any(|h| h.text == "Sense" && h.level == 2), "{hs:?}");
+    }
+
+    #[test]
+    fn dict_sense_classes_in_outline() {
+        let html = r#"
+        <div class="sg">
+          <span class="pos">VERB 动词</span>
+          <ol class="se2g">
+            <li class="se2"><span class="df">放, 置</span></li>
+            <li class="se2"><span class="df">设定</span></li>
+          </ol>
+        </div>
+        "#;
+        let (_lines, hs) = super::html_to_doc(html, &StyleTable::default());
+        assert!(
+            hs.iter().any(|h| h.text.contains("VERB") || h.text.contains("动词")),
+            "pos missing: {hs:?}"
+        );
+        assert!(
+            hs.iter().any(|h| h.text.contains("放") || h.text.contains("设定")),
+            "df/se2 missing: {hs:?}"
+        );
+    }
+
+    #[test]
+    fn senselevel_numbered_senses() {
+        let html = r#"
+        <h1 class="word">■ make</h1>
+        <div class="level-1">
+          <p class="senselevel-1">1) make 往往同后面离开一段距离的另一些单词遥相呼应。</p>
+          <p class="senselevel-1">2) make somebody do something 是「使某人做某事」。</p>
+          <div class="level-2">
+            <p class="senselevel-2">a) 「把 Y 变为 X」。</p>
+            <p class="senselevel-2">b) 「把 Y 权作 X」。</p>
+          </div>
+        </div>
+        "#;
+        let (_lines, hs) = super::html_to_doc(html, &StyleTable::default());
+        assert!(
+            hs.iter().any(|h| h.text.contains("make") && h.level == 1),
+            "h1: {hs:?}"
+        );
+        assert!(hs.iter().any(|h| h.text.starts_with("1)")), "1): {hs:?}");
+        assert!(hs.iter().any(|h| h.text.starts_with("2)")), "2): {hs:?}");
+        assert!(hs.iter().any(|h| h.text.starts_with("a)")), "a): {hs:?}");
+        assert!(hs.iter().any(|h| h.text.starts_with("b)")), "b): {hs:?}");
+    }
     #[test]
     fn test_plain_text() {
         let lines = html_to_lines("hello world");
@@ -531,6 +809,66 @@ mod tests {
     fn test_gt_inside_attribute() {
         // A '>' inside a quoted attribute must not close the tag early.
         let lines = html_to_lines(r#"<span title="a > b">kept</span>"#);
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(text, "kept");
+    }
+
+    #[test]
+    fn test_img_emits_alt() {
+        let lines = html_to_lines(r#"before<img src="x.png" alt="diagram">after"#);
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(text.contains("before"), "{text}");
+        assert!(text.contains("[diagram]"), "{text}");
+        assert!(text.contains("after"), "{text}");
+        assert!(!text.contains("x.png"), "{text}");
+    }
+
+    #[test]
+    fn test_img_empty_alt_silent() {
+        let lines = html_to_lines(r#"a<img src="x" alt="">b"#);
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(text, "ab");
+    }
+
+    #[test]
+    fn test_table_simple_grid() {
+        // R-02: rows as lines, cells separated — not one glued blob.
+        let html = "<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>";
+        let lines = html_to_lines(html);
+        let rows: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .filter(|s: &String| !s.trim().is_empty())
+            .collect();
+        assert!(rows.len() >= 2, "need ≥2 rows: {rows:?}");
+        assert!(
+            rows[0].contains('A') && rows[0].contains('B') && rows[0].contains('|'),
+            "{rows:?}"
+        );
+        assert!(
+            rows[1].contains('1') && rows[1].contains('2') && rows[1].contains('|'),
+            "{rows:?}"
+        );
+        // not glued as "A B 1 2" on one line
+        assert!(!rows[0].contains('1'), "{rows:?}");
+    }
+
+    #[test]
+    fn test_nested_quotes_in_attr() {
+        // R-03: outer double, inner single (and '>') must not truncate the tag.
+        let lines = html_to_lines(r#"<span title="a 'x>y' b">kept</span>"#);
         let text: String = lines
             .iter()
             .flat_map(|l| l.spans.iter())

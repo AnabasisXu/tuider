@@ -176,6 +176,7 @@ tuider (bin, src/)
 | [README.md](../README.md) | 产品入口 |
 | [STATUS.md](STATUS.md) | **现状权威快照** |
 | [NEXT.md](NEXT.md) | **下一步目标** |
+| [refactor-design-and-planning.md](refactor-design-and-planning.md) | **重构方法论与切片路线**（mdx-tui→Tuider） |
 | [plugins.md](plugins.md) | 插件运行机制 |
 | [complexity-review.md](complexity-review.md) | 复杂度审查 |
 | [superpowers/specs/2026-07-22-host-boundary-refactor-design.md](superpowers/specs/2026-07-22-host-boundary-refactor-design.md) | host-boundary 设计 |

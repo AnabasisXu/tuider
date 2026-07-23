@@ -54,6 +54,20 @@ pub type FnLoadBody =
     unsafe extern "C" fn(src: *mut c_void, index: usize, width: usize) -> *mut c_char;
 /// Required: free string returned by title/entry/load.
 pub type FnStringFree = unsafe extern "C" fn(s: *mut c_char);
+/// Optional dict: lookup word → heap text (JSON lines or multi-entry text).
+pub type FnDictLookup =
+    unsafe extern "C" fn(src: *mut c_void, word: *const c_char) -> *mut c_char;
+/// Optional dict: prefix search → newline-separated headwords.
+pub type FnDictSearch =
+    unsafe extern "C" fn(src: *mut c_void, prefix: *const c_char, limit: usize) -> *mut c_char;
+/// Optional dict: reverse lookup in definitions → newline-separated headwords.
+pub type FnDictReverse =
+    unsafe extern "C" fn(src: *mut c_void, query: *const c_char, limit: usize) -> *mut c_char;
+/// Optional dict: list loaded dictionary titles → newline-separated.
+pub type FnDictList = unsafe extern "C" fn(src: *mut c_void) -> *mut c_char;
+/// Optional dict: select active dictionary by index; 1 = ok.
+pub type FnDictSelect = unsafe extern "C" fn(src: *mut c_void, index: usize) -> c_int;
+
 
 // ── Helpers for plugin authors ────────────────────────────────────────────
 

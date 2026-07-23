@@ -119,3 +119,43 @@ API 侧适配后文本源 trait 名：`PluginTextSource`。App 侧已渲染源�
 - [x] `BODY_HTML_V1_PREFIX` + host 渲染
 - [x] 帮助列出已加载插件与 plugins 目录
 - [x] `scripts/install-plugins.sh`
+
+## URL / HN 缓存与错误（用户可知路径）
+
+插件自管磁盘缓存；host **无** `cache` 模块。
+
+### 路径
+
+| | |
+|--|--|
+| 根目录 | `$XDG_CACHE_HOME/tuider`，否则 `~/.cache/tuider` |
+| URL 页 | `pages/<fnv1a64(url)>.md`（markdown 正文） |
+| HN top | `hn/topstories.json` |
+| HN item | `hn/item/<id>.json` |
+| HN 外链全文 | 同 URL 的 `pages/…` |
+
+**清缓存：** 删整个目录或子路径即可，例如 `rm -rf ~/.cache/tuider/pages`。无专用 CLI 清缓存命令（ponytail）。
+
+### TTL（HN）
+
+| 键 | 时长 |
+|----|------|
+| topstories | 15 min |
+| item JSON | 6 h |
+| 外链 page | 24 h |
+
+URL 插件：命中即用（**无 TTL**；改 URL 或删文件强制刷新）。
+
+### 错误文案 / 重试
+
+- **URL open 失败**：`tuider_plugin_open` 经 `write_err` 返回可读字符串（网络/HTTP status/`only http(https)`/`blocked local host`）；host 打印后 exit。**无自动重试**（ponytail；加在 connect 抖动时再补）。
+- **HN open**：top 拉取最多 **5 次**指数退避（约 300ms×2^n）；失败文案 `HN open failed after retries: …`。
+- **HN 外链 article**（键 `a` / action `article`）：失败写入正文 `_article fetch failed: …_`，不崩 TUI。
+
+### HN 与 mdx-tui 有意差异（HN-01..03）
+
+| ID | 行为 |
+|----|------|
+| **HN-01** | mdx-tui `-hn -l` 打 markdown 表；Tuider `-l` 是通用「打印 entry_at」，HN 侧栏/列表为**纯标题行**（与 TUI 侧栏共用 `entry_at`，不能塞表行）。需要表格式时进 TUI 或自行管道处理标题列表。 |
+| **HN-02** | 评论 BFS **cap 40**（`MAX_COMMENTS`）；更深树以后再开。 |
+| **HN-03** | mdx-tui：Enter/Shift+Enter 分评论与原文；Tuider：**Enter 默认评论+meta**，键 **`a`**（action `article`）再抓外链全文。保留差异。 |

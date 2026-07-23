@@ -64,8 +64,15 @@ impl ContentSource for FileTreeSource {
                 headings: doc.headings,
             }
         } else {
+            // code-like / plain: host outline scanner lives in loader; reuse via md lines
             let lines = md::render_txt_width(&text, width.max(20));
-            LoadResult::plain(lines, format!("{name}  ({} lines)", text.lines().count()))
+            let headings = crate::loader::outline_from_plain_lines(&lines);
+            LoadResult {
+                lines,
+                status: format!("{name}  ({} lines)", text.lines().count()),
+                links: Vec::new(),
+                headings,
+            }
         }
     }
 }

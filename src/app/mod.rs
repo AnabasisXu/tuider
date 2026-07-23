@@ -67,6 +67,11 @@ pub struct App {
     pub(crate) links: Vec<LinkEntry>,
     pub(crate) headings: Vec<HeadingEntry>,
     pub(crate) nav: nav::NavState,
+    /// Doc index currently shown in body (None = not loaded).
+    pub(crate) loaded_doc: Option<usize>,
+    /// Dict picker (Ctrl+B). Closed = None; open holds selection index into names cache.
+    pub(crate) dict_panel: Option<usize>,
+    pub(crate) dict_panel_names: Vec<String>,
 }
 
 impl App {
@@ -98,13 +103,16 @@ impl App {
             links: Vec::new(),
             headings: Vec::new(),
             nav: nav::NavState::default(),
+            loaded_doc: None,
+            dict_panel: None,
+            dict_panel_names: Vec::new(),
         };
         app.refilter();
-        if !app.filtered.is_empty() {
+        if app.filtered.is_empty() {
+            app.status = "empty — ? help · C-q quit".into();
+        } else {
             app.list_sel = 0;
             app.load_selected();
-        } else {
-            app.status = "empty — ? help · C-q quit".into();
         }
         app
     }
@@ -112,7 +120,8 @@ impl App {
     pub fn run(mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         loop {
             #[cfg(feature = "ai")]
-            self.ai.poll();
+            self.ai.poll(self.source.as_mut());
+
             terminal.draw(|f| ui::draw(f, &mut self))?;
             let timeout = if cfg!(feature = "ai") {
                 std::time::Duration::from_millis(80)
@@ -236,6 +245,9 @@ impl App {
         #[cfg(feature = "ai")]
         if let Some(l) = self.ai.focus_label() {
             return l;
+        }
+        if self.dict_panel.is_some() {
+            return "dicts";
         }
         if self.nav.overlay.is_some() {
             return match self.nav.overlay {
@@ -364,8 +376,14 @@ impl App {
         }
         let cur = self.list_sel as isize;
         let next = (cur + delta).clamp(0, self.filtered.len() as isize - 1) as usize;
+        if next == self.list_sel {
+            return;
+        }
         self.list_sel = next;
-        self.load_selected();
+        // only network when selection actually changes
+        if self.selected_doc_index() != self.loaded_doc {
+            self.load_selected();
+        }
     }
 
     pub(crate) fn refilter(&mut self) {
@@ -380,11 +398,158 @@ impl App {
         if self.filtered.is_empty() {
             self.list_sel = 0;
             self.body.clear();
+            self.loaded_doc = None;
             self.status = "no matches".into();
         } else {
             self.list_sel = self.list_sel.min(self.filtered.len() - 1);
+            if self.selected_doc_index() != self.loaded_doc {
+                self.load_selected();
+            }
+        }
+    }
+
+    /// Ctrl+U: clear filter string, keep current body/selection when possible.
+    pub(crate) fn clear_filter_keep_result(&mut self) {
+        let keep = self.selected_doc_index();
+        self.filter.clear();
+        self.refilter_keep(keep);
+        self.status = "filter cleared".into();
+    }
+
+    /// Esc: clear filter; if already empty, clear body result.
+    pub(crate) fn clear_filter_or_result(&mut self) {
+        if !self.filter.is_empty() {
+            let keep = self.selected_doc_index();
+            self.filter.clear();
+            self.refilter_keep(keep);
+            self.status = "filter cleared".into();
+        } else if !self.body.is_empty() {
+            self.body.clear();
+            self.links.clear();
+            self.headings.clear();
+            self.loaded_doc = None;
+            self.scroll = 0;
+            self.status = "result cleared".into();
+        }
+    }
+
+    pub(crate) fn refilter_keep(&mut self, keep: Option<usize>) {
+        let q = self.filter.to_lowercase();
+        let entries = self.source.entries();
+        self.filtered = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| q.is_empty() || name.to_lowercase().contains(&q))
+            .map(|(i, _)| i)
+            .collect();
+        if self.filtered.is_empty() {
+            self.list_sel = 0;
+            // ponytail: keep body on clear-filter; only empty list drops selection index
+            return;
+        }
+        if let Some(di) = keep {
+            if let Some(pos) = self.filtered.iter().position(|&i| i == di) {
+                self.list_sel = pos;
+                return;
+            }
+        }
+        self.list_sel = self.list_sel.min(self.filtered.len() - 1);
+        if self.selected_doc_index() != self.loaded_doc {
             self.load_selected();
         }
+    }
+
+    pub(crate) fn delete_filter_word(&mut self) {
+        // ponytail: cursor always at end of filter
+        let s = self.filter.trim_end();
+        if let Some(pos) = s.rfind(char::is_whitespace) {
+            self.filter.truncate(pos);
+        } else {
+            self.filter.clear();
+        }
+        self.refilter();
+    }
+
+    pub(crate) fn toggle_dict_panel(&mut self) {
+        if self.dict_panel.is_some() {
+            self.dict_panel = None;
+            self.dict_panel_names.clear();
+            self.status = "dict panel off".into();
+            return;
+        }
+        let names = self.source.list_dicts();
+        if names.is_empty() {
+            self.status = "no multi-dict".into();
+            return;
+        }
+        self.nav.overlay = None;
+        // prefer matching current title
+        let cur = self.source.title();
+        let sel = names.iter().position(|n| n == cur).unwrap_or(0);
+        self.dict_panel_names = names;
+        self.dict_panel = Some(sel);
+        self.status = "dict panel".into();
+    }
+
+    pub(crate) fn close_dict_panel(&mut self) {
+        self.dict_panel = None;
+        self.dict_panel_names.clear();
+    }
+
+    pub(crate) fn select_dict_from_panel(&mut self) {
+        let Some(sel) = self.dict_panel else {
+            return;
+        };
+        if !self.source.select_dict(sel) {
+            self.status = "select dict failed".into();
+            return;
+        }
+        self.close_dict_panel();
+        let keep = self.selected_doc_index();
+        // refilter after dict change (entries may change)
+        self.refilter_keep(keep);
+        if self.selected_doc_index() != self.loaded_doc {
+            self.load_selected();
+        } else if self.loaded_doc.is_some() {
+            // same index may be different content after dict switch
+            self.load_selected();
+        }
+        self.status = format!("dict: {}", self.source.title());
+    }
+
+    pub(crate) fn yank_definition(&mut self) {
+        let text = if let Some(di) = self.selected_doc_index() {
+            self.source.plain_body(di)
+        } else {
+            self.body
+                .iter()
+                .map(Self::line_plain)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        if text.is_empty() {
+            self.status = "yank: empty body".into();
+            return;
+        }
+        match crate::app::visual::yank_osc52(&text) {
+            Ok(()) => {
+                let n = text.lines().count();
+                self.status = format!("copied {n} line(s) via OSC 52");
+            }
+            Err(e) => self.status = format!("yank failed: {e}"),
+        }
+    }
+
+    pub fn dict_panel_open(&self) -> bool {
+        self.dict_panel.is_some()
+    }
+
+    pub fn dict_panel_names(&self) -> &[String] {
+        &self.dict_panel_names
+    }
+
+    pub fn dict_panel_sel(&self) -> usize {
+        self.dict_panel.unwrap_or(0)
     }
 
     pub(crate) fn load_selected(&mut self) {
@@ -397,12 +562,73 @@ impl App {
         self.headings = result.headings;
         self.scroll = 0;
         self.status = result.status;
+        self.loaded_doc = Some(di);
         self.visual = None;
         self.nav.overlay = None;
         if !self.vim_query.is_empty() {
             self.vim_match_idx = 0;
             self.jump_to_match(0);
         }
+    }
+
+    /// Plugin-specific action then reload body (e.g. HN fetch article).
+    pub(crate) fn source_action(&mut self, action: &str) {
+        let Some(di) = self.selected_doc_index() else {
+            self.status = "no selection".into();
+            return;
+        };
+        if !self.source.action(di, action) {
+            self.status = format!("no action: {action}");
+            return;
+        }
+        self.load_selected();
+    }
+
+    /// Jump among H1/H2 sections: `]` next, `[` prev (article ↔ comments).
+    pub(crate) fn jump_section(&mut self, dir: isize) {
+        if self.headings.is_empty() {
+            self.status = "no sections".into();
+            return;
+        }
+        let cur = self.scroll as usize;
+        let idxs: Vec<usize> = self
+            .headings
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| h.level <= 2)
+            .map(|(i, _)| i)
+            .collect();
+        let pool = if idxs.is_empty() {
+            (0..self.headings.len()).collect::<Vec<_>>()
+        } else {
+            idxs
+        };
+        let mut at = 0usize;
+        for (k, &hi) in pool.iter().enumerate() {
+            if self.headings[hi].line <= cur {
+                at = k;
+            }
+        }
+        let next = if dir > 0 {
+            (at + 1).min(pool.len() - 1)
+        } else if dir < 0 {
+            at.saturating_sub(1)
+        } else {
+            at
+        };
+        // if already past current section start and going next from middle, advance
+        let target = if dir > 0
+            && self.headings[pool[at]].line < cur
+            && next == at
+            && at + 1 < pool.len()
+        {
+            at + 1
+        } else {
+            next
+        };
+        let h = &self.headings[pool[target]];
+        self.scroll = h.line as u16;
+        self.status = format!("§ {}", h.text);
     }
 
     pub(crate) fn line_plain(line: &Line<'_>) -> String {
@@ -434,6 +660,23 @@ mod tests {
         ];
         assert_eq!(selected_plain(&body, 0, 1), "a\nb");
         assert_eq!(selected_plain(&body, 2, 0), "a\nb\nc");
+    }
+
+    #[test]
+    fn delete_filter_word_truncates() {
+        // pure string logic mirror of delete_filter_word (no full App/source)
+        fn del_word(mut s: String) -> String {
+            let t = s.trim_end();
+            if let Some(pos) = t.rfind(char::is_whitespace) {
+                s.truncate(pos);
+            } else {
+                s.clear();
+            }
+            s
+        }
+        assert_eq!(del_word("foo bar".into()), "foo");
+        assert_eq!(del_word("foo".into()), "");
+        assert_eq!(del_word("a b c ".into()), "a b");
     }
 
     #[test]

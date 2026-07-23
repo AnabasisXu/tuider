@@ -49,6 +49,11 @@ impl App {
             return false;
         }
 
+        // Dict panel focus before global so Esc/arrows stay in panel.
+        if self.dict_panel.is_some() {
+            return self.handle_dict_panel_key(key, ctrl, alt);
+        }
+
         if self.handle_global(key, ctrl, alt) {
             return true;
         }
@@ -71,6 +76,49 @@ impl App {
             }
             super::InputMode::Normal => self.handle_normal_key(key, ctrl, alt, shift),
         }
+    }
+
+    fn handle_dict_panel_key(&mut self, key: KeyEvent, ctrl: bool, alt: bool) -> bool {
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Char('c') | KeyCode::Char('C')
+                if ctrl =>
+            {
+                return true;
+            }
+            KeyCode::Char('b') | KeyCode::Char('B') if ctrl => {
+                self.toggle_dict_panel();
+            }
+            KeyCode::Esc => {
+                self.close_dict_panel();
+                self.status = "dict panel off".into();
+            }
+            KeyCode::Up | KeyCode::Char('k') if !alt => {
+                if let Some(sel) = self.dict_panel.as_mut() {
+                    *sel = sel.saturating_sub(1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') if !alt => {
+                if let Some(sel) = self.dict_panel.as_mut() {
+                    let max = self.dict_panel_names.len().saturating_sub(1);
+                    *sel = (*sel + 1).min(max);
+                }
+            }
+            KeyCode::Enter if !ctrl && !alt => {
+                self.select_dict_from_panel();
+            }
+            // scroll body behind panel
+            KeyCode::Up if alt => self.scroll = self.scroll.saturating_sub(1),
+            KeyCode::Down if alt => self.scroll = self.scroll.saturating_add(1),
+            KeyCode::PageUp => {
+                self.scroll = self.scroll.saturating_sub(self.content_page_step());
+            }
+            KeyCode::PageDown => {
+                self.scroll = self.scroll.saturating_add(self.content_page_step());
+            }
+            KeyCode::Char('y') | KeyCode::Char('Y') if ctrl => self.yank_definition(),
+            _ => {}
+        }
+        false
     }
 
     fn handle_normal_key(
@@ -111,6 +159,10 @@ impl App {
                         self.open_toc();
                         return false;
                     }
+                    KeyCode::Char('a') => {
+                        self.source_action("article");
+                        return false;
+                    }
                     _ => {}
                 }
             }
@@ -129,8 +181,11 @@ impl App {
         // Tab: cycle multi-layer source (dict plugin); AI mode keeps Tab for providers
         if key.code == KeyCode::Tab && key.modifiers == KeyModifiers::NONE {
             if self.source.cycle_layer() {
-                self.refilter();
-                self.load_selected();
+                let keep = self.selected_doc_index();
+                self.refilter_keep(keep);
+                if self.selected_doc_index() != self.loaded_doc || self.loaded_doc.is_some() {
+                    self.load_selected();
+                }
                 self.status = format!("source: {}", self.source.title());
             }
             return false;
@@ -164,32 +219,57 @@ impl App {
 
         let sidebar = self.show_sidebar() && self.visual.is_none();
 
-        if sidebar && !alt && !ctrl {
-            match key.code {
-                KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE || shift => {
-                    if !c.is_control() && c != 'v' && c != 'V' {
-                        self.filter.push(c);
+        // Enter always opens selection (sidebar or not)
+        if key.code == KeyCode::Enter
+            && key.modifiers == KeyModifiers::NONE
+            && self.visual.is_none()
+            && !alt
+            && !ctrl
+        {
+            self.load_selected();
+            return false;
+        }
+
+        // Filter edit keys (sidebar search box). Ctrl+U always when sidebar can filter.
+        if sidebar {
+            if ctrl && matches!(key.code, KeyCode::Char('u') | KeyCode::Char('U')) {
+                self.clear_filter_keep_result();
+                return false;
+            }
+            if ctrl && matches!(key.code, KeyCode::Char('w') | KeyCode::Char('W')) {
+                self.delete_filter_word();
+                return false;
+            }
+            if alt && matches!(key.code, KeyCode::Backspace) {
+                self.delete_filter_word();
+                return false;
+            }
+            if !alt && !ctrl {
+                match key.code {
+                    KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE || shift => {
+                        if !c.is_control() && c != 'v' && c != 'V' {
+                            self.filter.push(c);
+                            self.refilter();
+                            return false;
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        self.filter.pop();
                         self.refilter();
                         return false;
                     }
-                }
-                KeyCode::Backspace => {
-                    self.filter.pop();
-                    self.refilter();
-                    return false;
-                }
-                KeyCode::Esc => {
-                    if !self.filter.is_empty() {
-                        self.filter.clear();
+                    KeyCode::Delete => {
+                        // ponytail: cursor always end — Delete = Backspace
+                        self.filter.pop();
                         self.refilter();
+                        return false;
                     }
-                    return false;
+                    KeyCode::Esc => {
+                        self.clear_filter_or_result();
+                        return false;
+                    }
+                    _ => {}
                 }
-                KeyCode::Enter => {
-                    self.load_selected();
-                    return false;
-                }
-                _ => {}
             }
         }
 
@@ -211,12 +291,22 @@ impl App {
                 if !self.single_entry {
                     self.show_sidebar = !self.show_sidebar;
                     self.status = if self.show_sidebar {
-                        "sidebar on"
+                        "sidebar on (Ctrl+F toggles; not search layout)"
                     } else {
                         "sidebar off"
                     }
                     .into();
                 }
+            }
+            KeyCode::Char('b') | KeyCode::Char('B') if ctrl => {
+                self.toggle_dict_panel();
+            }
+            KeyCode::Char('y') | KeyCode::Char('Y') if ctrl => {
+                self.yank_definition();
+            }
+            KeyCode::Char('u') | KeyCode::Char('U') if ctrl => {
+                // works with or without sidebar so status is consistent
+                self.clear_filter_keep_result();
             }
             KeyCode::Char('s') | KeyCode::Char('S') if ctrl => {
                 if !self.show_sidebar() {
@@ -344,12 +434,16 @@ impl App {
             }
             KeyCode::Home if sidebar => {
                 self.list_sel = 0;
-                self.load_selected();
+                if self.selected_doc_index() != self.loaded_doc {
+                    self.load_selected();
+                }
             }
             KeyCode::End if sidebar => {
                 if !self.filtered.is_empty() {
                     self.list_sel = self.filtered.len() - 1;
-                    self.load_selected();
+                    if self.selected_doc_index() != self.loaded_doc {
+                        self.load_selected();
+                    }
                 }
             }
             KeyCode::Home => self.scroll = 0,
@@ -359,6 +453,13 @@ impl App {
             KeyCode::Esc if !sidebar && !self.vim_query.is_empty() => {
                 self.vim_query.clear();
                 self.status = "search cleared".into();
+            }
+            // jump article / comments section
+            KeyCode::Char('[') if key.modifiers == KeyModifiers::NONE => {
+                self.jump_section(-1);
+            }
+            KeyCode::Char(']') if key.modifiers == KeyModifiers::NONE => {
+                self.jump_section(1);
             }
             _ => {}
         }

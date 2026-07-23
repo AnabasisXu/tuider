@@ -2,6 +2,9 @@
 
 > 目录：`~/cleantest/tuider`
 
+功能 parity 清单（mdx-tui 有而 Tuider 无）：[mdx-tui-unimplemented-gap.md](mdx-tui-unimplemented-gap.md)
+
+
 ## 已完成（方案 A + P0 + pkg + host-boundary）
 
 - [x] 动态 `.so` ABI v1 + host `loader.rs`
@@ -14,6 +17,7 @@
 - [x] **PluginTextSource** + host `ContentSource` 命名分离
 - [x] **BODY_HTML_V1_PREFIX** 文档化（ABI 仍为 1）
 - [x] **InputMode** 键位路由收敛
+- [x] 切片 E：R-01/02/03 html_render + HN/URL 差异文档（`plugins.md`）
 
 ## P1
 

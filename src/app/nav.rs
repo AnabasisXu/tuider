@@ -1,6 +1,6 @@
 //! mdterm-style navigation overlays:
-//! - `f` link picker (open http / local / #anchor)
-//! - `o` TOC / outline (jump heading)
+//! - `f` link picker (open http / local / #anchor) — type to filter
+//! - `o` TOC / outline (jump heading, incl. fetched article) — type to filter
 //! - `Alt+f` consult: bottom fuzzy search with preview → jump line
 
 use std::path::{Path, PathBuf};
@@ -59,15 +59,14 @@ impl App {
             query: String::new(),
             filtered: (0..self.links.len()).collect(),
         };
-        self.status = "links — ↑↓ Enter open · Esc".into();
+        self.status = "links — type 过滤 · ↑↓ Enter · Esc".into();
     }
 
     pub(crate) fn open_toc(&mut self) {
         if self.headings.is_empty() {
-            self.status = "no headings in document".into();
+            self.status = "no outline / 义项 in document".into();
             return;
         }
-        // select heading nearest to scroll
         let cur = self.scroll as usize;
         let mut sel = 0;
         for (i, h) in self.headings.iter().enumerate() {
@@ -77,12 +76,15 @@ impl App {
         }
         self.nav = NavState {
             overlay: Some(Overlay::Toc),
-            selected: sel,
+            selected: 0,
             scroll: 0,
             query: String::new(),
             filtered: (0..self.headings.len()).collect(),
         };
-        self.status = "outline — ↑↓ Enter jump · Esc".into();
+        if let Some(pos) = self.nav.filtered.iter().position(|&i| i == sel) {
+            self.nav.selected = pos;
+        }
+        self.status = "o 大纲/义项 — 打字过滤 · ↑↓ Enter 跳转 · Esc".into();
     }
 
     pub(crate) fn open_consult(&mut self) {
@@ -127,10 +129,51 @@ impl App {
         self.nav.scroll = 0;
     }
 
+    /// Shared type-to-filter for list overlays (Toc / Links). Ready to reuse for more `o`-style jumps.
+    fn refilter_nav_list(&mut self) {
+        let Some(mode) = self.nav.overlay else {
+            return;
+        };
+        let q = self.nav.query.to_lowercase();
+        match mode {
+            Overlay::Toc => {
+                self.nav.filtered = self
+                    .headings
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, h)| q.is_empty() || h.text.to_lowercase().contains(&q))
+                    .map(|(i, _)| i)
+                    .collect();
+            }
+            Overlay::Links => {
+                self.nav.filtered = self
+                    .links
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, l)| {
+                        q.is_empty()
+                            || l.text.to_lowercase().contains(&q)
+                            || l.url.to_lowercase().contains(&q)
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+            }
+            Overlay::Consult => {
+                self.refilter_consult();
+                return;
+            }
+        }
+        if self.nav.selected >= self.nav.filtered.len() {
+            self.nav.selected = self.nav.filtered.len().saturating_sub(1);
+        }
+        self.nav.scroll = 0;
+    }
+
     pub(crate) fn handle_nav_key(&mut self, key: KeyEvent) -> bool {
         let Some(mode) = self.nav.overlay else {
             return false;
         };
+        let list_filter = matches!(mode, Overlay::Toc | Overlay::Links | Overlay::Consult);
         match key.code {
             KeyCode::Esc => {
                 self.close_nav();
@@ -151,19 +194,19 @@ impl App {
                 self.nav_activate(mode);
                 return true;
             }
-            KeyCode::Backspace if mode == Overlay::Consult => {
+            KeyCode::Backspace if list_filter => {
                 self.nav.query.pop();
-                self.refilter_consult();
+                self.refilter_nav_list();
                 return true;
             }
             KeyCode::Char(c)
-                if mode == Overlay::Consult
+                if list_filter
                     && (key.modifiers == KeyModifiers::NONE
                         || key.modifiers == KeyModifiers::SHIFT) =>
             {
                 if !c.is_control() {
                     self.nav.query.push(c);
-                    self.refilter_consult();
+                    self.refilter_nav_list();
                 }
                 return true;
             }
@@ -403,10 +446,16 @@ fn draw_list_overlay<T, F>(
 ) where
     F: Fn(&T) -> String,
 {
-    let h = (nav.filtered.len() as u16 + 2).clamp(5, area.height.saturating_sub(4).max(5));
+    // +1 row for search box
+    let h = (nav.filtered.len() as u16 + 3).clamp(6, area.height.saturating_sub(4).max(6));
     let w = (area.width * 4 / 5).clamp(40, area.width.saturating_sub(4).max(40));
     let popup = centered(w, h, area);
     frame.render_widget(Clear, popup);
+    let title = if nav.query.is_empty() {
+        format!("{title}  /filter")
+    } else {
+        format!("{title}  /{}", nav.query)
+    };
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -414,7 +463,30 @@ fn draw_list_overlay<T, F>(
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    let visible = inner.height as usize;
+    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(inner);
+    let filter_line = Line::from(vec![
+        Span::styled("/", Style::default().fg(theme.vim_prompt())),
+        Span::styled(
+            if nav.query.is_empty() {
+                "type to filter…".into()
+            } else {
+                nav.query.clone()
+            },
+            Style::default().fg(if nav.query.is_empty() {
+                theme.muted()
+            } else {
+                theme.search_text()
+            }),
+        ),
+        Span::styled(
+            format!("  {}/{}", nav.filtered.len(), items.len()),
+            Style::default().fg(theme.muted()),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(filter_line), chunks[0]);
+
+    let list_area = chunks[1];
+    let visible = list_area.height as usize;
     let start = if nav.selected >= visible {
         nav.selected + 1 - visible
     } else {
@@ -438,7 +510,7 @@ fn draw_list_overlay<T, F>(
             ListItem::new(Line::from(Span::styled(text, style)))
         })
         .collect();
-    frame.render_widget(List::new(list_items), inner);
+    frame.render_widget(List::new(list_items), list_area);
 }
 
 fn draw_consult(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {

@@ -48,6 +48,40 @@ pub trait ContentSource: Send {
     fn cycle_layer(&mut self) -> bool {
         false
     }
+    /// Optional plugin action (`article`, …). True → host should reload body.
+    fn action(&mut self, _index: usize, _action: &str) -> bool {
+        false
+    }
+    /// Dict tools: (dict_title, definition_text) pairs.
+    fn lookup_word(&mut self, _word: &str) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    fn search_headwords(&mut self, _prefix: &str, _limit: usize) -> Vec<String> {
+        Vec::new()
+    }
+    fn reverse_lookup(&mut self, _query: &str, _limit: usize) -> Vec<String> {
+        Vec::new()
+    }
+    fn list_dicts(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn select_dict(&mut self, _index: usize) -> bool {
+        false
+    }
+    /// Plain-ish body for clipboard / AI (no ANSI).
+    fn plain_body(&mut self, index: usize) -> String {
+        let r = self.load(index, 100);
+        r.lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 pub fn ai_compiled() -> bool {

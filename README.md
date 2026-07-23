@@ -16,6 +16,7 @@
 | [docs/plugins.md](docs/plugins.md) | **动态插件加载** |
 | [docs/complexity-review.md](docs/complexity-review.md) | 复杂度 |
 | [docs/PLAN.md](docs/PLAN.md) | 决策 |
+| [docs/refactor-design-and-planning.md](docs/refactor-design-and-planning.md) | mdx-tui→Tuider 重构方法与规划 |
 
 ## 快速开始
 

@@ -57,6 +57,8 @@ crates/
 
 - AI：多 provider 时 429/5xx 自动轮换下一个（Tab 仍手动切换）
 - dict：mdx-tui HTML+CSS 渲染（无 CSS 时用 mdx-tui 内建青/绿/黄 cascade）
+- HTML 边角（2026-07-23）：`<img alt>` → `[alt]`；`<table>` 行分隔 + ` | ` 单元格；见 `html_render` 单测
+- HN/URL：缓存路径与 TTL、HN `-l` 标题行（非 mdx-tui 表）、评论 cap 40、`a`=全文 — `docs/plugins.md`
 - md/txt 仍走 mdterm 风格 `md::render`
 - `tuider pkg list|install|remove`：本地 cargo 构建/拷贝/删除 .so（catalog 同源）
 - dict 依赖 `mdx-tui-mdict`（AGPL）— 发行注意

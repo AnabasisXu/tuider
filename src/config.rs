@@ -159,6 +159,81 @@ pub fn load_path(path: &Path) -> Result<FileConfig, String> {
     serde_yaml::from_str(&text).map_err(|e| format!("YAML: {e}"))
 }
 
+/// Names from `wordlists:` in the first loadable tuider.yml.
+///
+/// Dual-read: if tuider.yml has no wordlists, also try `~/.config/mdx-tui.yml`
+/// (same key shape) so mdx-tui configs keep working.
+pub fn list_wordlists() -> Vec<String> {
+    let mut keys: Vec<String> = load()
+        .map(|(_, c)| c.wordlists.keys().cloned().collect())
+        .unwrap_or_default();
+    if keys.is_empty() {
+        if let Some(extra) = load_legacy_mdx_tui_wordlists() {
+            keys.extend(extra.keys().cloned());
+        }
+    }
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+/// Load a named wordlist file (one word per line). Relative paths resolve
+/// against the config file directory.
+#[allow(dead_code)] // host API; dict plugin currently loads wordlists itself
+pub fn load_wordlist(name: &str) -> Option<std::collections::HashSet<String>> {
+    let (cfg_path, map) = if let Some((p, c)) = load() {
+        if c.wordlists.contains_key(name) {
+            (p, c.wordlists)
+        } else if let Some(legacy) = load_legacy_mdx_tui_wordlists() {
+            (dirs_config().join("mdx-tui.yml"), legacy)
+        } else {
+            return None;
+        }
+    } else if let Some(legacy) = load_legacy_mdx_tui_wordlists() {
+        (dirs_config().join("mdx-tui.yml"), legacy)
+    } else {
+        return None;
+    };
+    let rel = map.get(name)?;
+    let full = if Path::new(rel).is_relative() {
+        cfg_path.parent()?.join(rel)
+    } else {
+        PathBuf::from(rel)
+    };
+    let text = fs::read_to_string(full).ok()?;
+    let set: std::collections::HashSet<String> = text
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.starts_with('#'))
+        .map(str::to_owned)
+        .collect();
+    if set.is_empty() {
+        None
+    } else {
+        Some(set)
+    }
+}
+
+fn dirs_config() -> PathBuf {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        PathBuf::from(xdg)
+    } else if let Some(home) = std::env::var_os("HOME") {
+        PathBuf::from(home).join(".config")
+    } else {
+        PathBuf::from(".config")
+    }
+}
+
+fn load_legacy_mdx_tui_wordlists() -> Option<HashMap<String, String>> {
+    let p = dirs_config().join("mdx-tui.yml");
+    let cfg = load_path(&p).ok()?;
+    if cfg.wordlists.is_empty() {
+        None
+    } else {
+        Some(cfg.wordlists)
+    }
+}
+
 /// Resolve AI providers from config file + env fallback.
 #[allow(dead_code)] // used from ai.rs when feature=ai
 pub fn ai_providers(file: Option<&FileConfig>) -> Vec<AiProvider> {
@@ -195,6 +270,7 @@ fn env_provider() -> Option<AiProvider> {
         model,
     })
 }
+
 
 fn ai_section_to_providers(ai: &AiSection) -> Vec<AiProvider> {
     let default_key = ai

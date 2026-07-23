@@ -47,7 +47,7 @@ impl MdTheme {
     fn dark() -> Self {
         Self {
             fg: rgb(205, 214, 244),
-            h1: rgb(205, 214, 244),
+            h1: rgb(250, 179, 135),
             h2: rgb(137, 180, 250),
             h3: rgb(203, 166, 247),
             h4: rgb(166, 227, 161),
@@ -135,20 +135,9 @@ pub fn render_txt_width(text: &str, width: usize) -> Vec<Line<'static>> {
             out.push(Line::from(Span::styled(line.to_string(), style)));
             continue;
         }
-        let mut col = 0usize;
-        let mut buf = String::new();
-        for ch in line.chars() {
-            let w = UnicodeWidthStr::width(ch.to_string().as_str()).max(1);
-            if col + w > width && !buf.is_empty() {
-                out.push(Line::from(Span::styled(std::mem::take(&mut buf), style)));
-                col = 0;
-            }
-            buf.push(ch);
-            col += w;
-        }
-        if !buf.is_empty() || line.is_empty() {
-            out.push(Line::from(Span::styled(buf, style)));
-        }
+        // word wrap on whitespace
+        let spans = vec![Span::styled(line.to_string(), style)];
+        out.extend(wrap_spans(spans, width));
     }
     out
 }
@@ -550,20 +539,37 @@ impl<'a> Renderer<'a> {
             }
         }
         if self.bold {
-            style = style.add_modifier(Modifier::BOLD);
-        }
-        if self.italic {
-            style = style.add_modifier(Modifier::ITALIC);
-        }
-        if self.strike {
-            style = style
-                .fg(self.theme.strike)
-                .add_modifier(Modifier::CROSSED_OUT);
-        }
-        if self.in_link {
+            // ponytail: bold = accent (HN by-name, emphasis)
             style = Style::new()
-                .fg(self.theme.link)
-                .add_modifier(Modifier::UNDERLINED);
+                .fg(self.theme.h4)
+                .add_modifier(Modifier::BOLD);
+            if self.italic {
+                style = style.add_modifier(Modifier::ITALIC);
+            }
+            if self.strike {
+                style = style
+                    .fg(self.theme.strike)
+                    .add_modifier(Modifier::CROSSED_OUT);
+            }
+            if self.in_link {
+                style = Style::new()
+                    .fg(self.theme.link)
+                    .add_modifier(Modifier::UNDERLINED | Modifier::BOLD);
+            }
+        } else {
+            if self.italic {
+                style = style.add_modifier(Modifier::ITALIC);
+            }
+            if self.strike {
+                style = style
+                    .fg(self.theme.strike)
+                    .add_modifier(Modifier::CROSSED_OUT);
+            }
+            if self.in_link {
+                style = Style::new()
+                    .fg(self.theme.link)
+                    .add_modifier(Modifier::UNDERLINED);
+            }
         }
         self.current
             .push(Span::styled(text.to_string(), style));
@@ -771,7 +777,6 @@ fn strip_tags(s: &str) -> String {
     }
     out
 }
-
 fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Line<'static>> {
     if width == 0 {
         return vec![Line::from(spans)];
@@ -786,35 +791,77 @@ fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Line<'static>> {
         return vec![Line::from("")];
     }
 
-    let mut lines = Vec::new();
-    let mut col = 0usize;
-    let mut cur: Vec<Span<'static>> = Vec::new();
-    let mut buf = String::new();
-    let mut style = chars[0].1;
-
-    let flush_buf = |buf: &mut String, style: Style, cur: &mut Vec<Span<'static>>| {
-        if !buf.is_empty() {
-            cur.push(Span::styled(std::mem::take(buf), style));
-        }
-    };
-
-    for (ch, st) in chars {
-        let cw = UnicodeWidthStr::width(ch.to_string().as_str()).max(1);
-        if st != style {
-            flush_buf(&mut buf, style, &mut cur);
-            style = st;
-        }
-        if col + cw > width && col > 0 {
-            flush_buf(&mut buf, style, &mut cur);
-            lines.push(Line::from(std::mem::take(&mut cur)));
-            col = 0;
-        }
-        buf.push(ch);
-        col += cw;
+    fn width_of(ch: char) -> usize {
+        UnicodeWidthStr::width(ch.to_string().as_str()).max(1)
     }
-    flush_buf(&mut buf, style, &mut cur);
-    if !cur.is_empty() {
-        lines.push(Line::from(cur));
+
+    fn emit_line(line: &[(char, Style)], out: &mut Vec<Line<'static>>) {
+        if line.is_empty() {
+            out.push(Line::from(""));
+            return;
+        }
+        let mut spans = Vec::new();
+        let mut buf = String::new();
+        let mut st = line[0].1;
+        for &(ch, s) in line {
+            if s != st {
+                if !buf.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut buf), st));
+                }
+                st = s;
+            }
+            buf.push(ch);
+        }
+        if !buf.is_empty() {
+            spans.push(Span::styled(buf, st));
+        }
+        out.push(Line::from(spans));
+    }
+
+    let mut lines = Vec::new();
+    let mut line: Vec<(char, Style)> = Vec::new();
+    let mut col = 0usize;
+    // index into `line` after last whitespace (exclusive end of kept prefix on break)
+    let mut break_end: Option<usize> = None;
+
+    for &(ch, st) in &chars {
+        let cw = width_of(ch);
+        if col + cw > width && col > 0 {
+            if let Some(be) = break_end {
+                let mut left = line[..be].to_vec();
+                while left.last().is_some_and(|(c, _)| c.is_whitespace()) {
+                    left.pop();
+                }
+                emit_line(&left, &mut lines);
+                // rest after break whitespace
+                let mut rest: Vec<(char, Style)> = line[be..]
+                    .iter()
+                    .copied()
+                    .skip_while(|(c, _)| c.is_whitespace())
+                    .collect();
+                rest.push((ch, st));
+                line = rest;
+            } else {
+                emit_line(&line, &mut lines);
+                line = vec![(ch, st)];
+            }
+            col = line.iter().map(|(c, _)| width_of(*c)).sum();
+            break_end = None;
+            for (i, (c, _)) in line.iter().enumerate() {
+                if c.is_whitespace() {
+                    break_end = Some(i + 1);
+                }
+            }
+            continue;
+        }
+        line.push((ch, st));
+        col += cw;
+        if ch.is_whitespace() {
+            break_end = Some(line.len());
+        }
+    }
+    if !line.is_empty() {
+        emit_line(&line, &mut lines);
     }
     if lines.is_empty() {
         lines.push(Line::from(""));
@@ -825,6 +872,23 @@ fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Line<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn word_wrap_breaks_on_space() {
+        let lines = wrap_spans(
+            vec![Span::raw("hello beautiful world")],
+            12,
+        );
+        let texts: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(texts.iter().all(|t| !t.contains("beautif") || t.contains("beautiful") || t.starts_with("world") || t.ends_with("hello") || t.contains(' ')), "{texts:?}");
+        // first line should end at a word boundary
+        let joined = texts.join("|");
+        assert!(!joined.contains("beautifu|l"), "mid-word split: {joined}");
+        assert!(texts.len() >= 2, "{texts:?}");
+    }
+
 
     #[test]
     fn links_and_headings_indexed() {

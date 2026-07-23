@@ -14,3 +14,5 @@ tuider-plugin-api = { path = "../tuider-plugin-api" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 mdx-tui-mdict = { path = "../../../mdx-tui-mdict", version = "0.1.4" }
+rusqlite = { version = "0.31", features = ["bundled"] }
+flate2 = "1"

@@ -191,7 +191,7 @@ impl App {
     }
 }
 
-fn yank_osc52(text: &str) -> std::io::Result<()> {
+pub(crate) fn yank_osc52(text: &str) -> std::io::Result<()> {
     use std::io::Write;
     let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, text.as_bytes());
     let mut out = std::io::stdout();
