@@ -44,6 +44,11 @@ pub trait ContentSource: Send {
     fn entry_path(&self, _index: usize) -> Option<std::path::PathBuf> {
         None
     }
+    /// If `path` is a local doc this source can open, return entry index.
+    /// FileTreeSource may append md/txt not yet in the list; others only match existing.
+    fn ensure_local_doc(&mut self, _path: &std::path::Path) -> Option<usize> {
+        None
+    }
     /// Multi-dict / layer cycle (plugin optional). Returns true if layer changed.
     fn cycle_layer(&mut self) -> bool {
         false

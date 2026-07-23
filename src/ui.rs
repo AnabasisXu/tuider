@@ -398,7 +398,7 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
             Line::from(vec![key("    n / N    "), desc("下一/上一匹配")]),
             Line::from(vec![key("    v / V    "), desc("字符/行 visual · y 复制")]),
             Line::from(vec![key("    f / o    "), desc("链接 / 大纲（侧栏关）")]),
-            Line::from(vec![key("    Alt+f    "), desc("consult 搜索预览跳转")]),
+            Line::from(vec![key("    Alt+f    "), desc("consult 空格多词过滤跳转")]),
             Line::from(vec![key("    O        "), desc("打开目录（侧栏关）")]),
             Line::from(vec![key("    ?        "), desc("帮助")]),
             Line::from(""),
@@ -500,36 +500,45 @@ fn highlight_line(
     current: Option<crate::app::MatchHit>,
 ) -> Line<'static> {
     let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-    if q.is_empty() {
+    let tokens: Vec<Vec<char>> = q
+        .split_whitespace()
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_lowercase().chars().collect())
+        .collect();
+    if tokens.is_empty() {
         return line.clone();
     }
-    let ql = q.to_lowercase();
     let chars: Vec<char> = text.chars().collect();
-    let lower_chars: Vec<char> = text
+    let lower: Vec<char> = text
         .chars()
         .map(|c| c.to_lowercase().next().unwrap_or(c))
         .collect();
-    let qchars: Vec<char> = ql.chars().collect();
     let n = chars.len();
-    let m = qchars.len();
-    if m == 0 || n < m {
-        return line.clone();
-    }
-    let mut has = false;
-    for i in 0..=(n - m) {
-        if lower_chars[i..i + m] == qchars[..] {
-            has = true;
-            break;
+    let mut mark = vec![false; n];
+    for tok in &tokens {
+        let m = tok.len();
+        if m == 0 || m > n {
+            continue;
+        }
+        let mut i = 0;
+        while i + m <= n {
+            if lower[i..i + m] == tok[..] {
+                for b in &mut mark[i..i + m] {
+                    *b = true;
+                }
+                i += m;
+            } else {
+                i += 1;
+            }
         }
     }
-    if !has {
+    if !mark.iter().any(|&b| b) {
         return line.clone();
     }
     let hit = Style::default()
         .fg(theme.status_focus_fg())
         .bg(theme.search_text())
         .add_modifier(Modifier::BOLD);
-    // current match: reverse + bold for stronger focus
     let cur = Style::default()
         .fg(theme.status_focus_fg())
         .bg(Color::Rgb(250, 179, 135)) // peach current
@@ -538,20 +547,21 @@ fn highlight_line(
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut i = 0;
     while i < n {
-        if i + m <= n && lower_chars[i..i + m] == qchars[..] {
-            let matched: String = chars[i..i + m].iter().collect();
-            let is_cur = current.is_some_and(|h| h.start == i && h.end == i + m);
-            spans.push(Span::styled(matched, if is_cur { cur } else { hit }));
-            i += m;
-        } else {
-            let start = i;
+        let on = mark[i];
+        let start = i;
+        i += 1;
+        while i < n && mark[i] == on {
             i += 1;
-            while i < n && !(i + m <= n && lower_chars[i..i + m] == qchars[..]) {
-                i += 1;
-            }
-            let piece: String = chars[start..i].iter().collect();
-            spans.push(Span::styled(piece, normal));
         }
+        let piece: String = chars[start..i].iter().collect();
+        let style = if !on {
+            normal
+        } else if current.is_some_and(|h| h.start < i && h.end > start) {
+            cur
+        } else {
+            hit
+        };
+        spans.push(Span::styled(piece, style));
     }
     Line::from(spans)
 }

@@ -811,6 +811,15 @@ mod tests {
     }
 
     #[test]
+    fn match_hits_orderless_tokens() {
+        let body = vec![Line::from(Span::raw("see md then txt here"))];
+        let hits = search::find_hits(&body, "txt md");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0], MatchHit { line: 0, start: 4, end: 6 }); // "md"
+        assert_eq!(hits[1], MatchHit { line: 0, start: 12, end: 15 }); // "txt"
+    }
+
+    #[test]
     fn default_source_has_no_action() {
         // trait default: no tuider_source_action (dict/md/code/url)
         struct Empty;

@@ -1,6 +1,6 @@
 //! Local md/txt document source.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ratatui::text::Line;
 
@@ -35,6 +35,38 @@ impl ContentSource for FileTreeSource {
 
     fn entry_path(&self, index: usize) -> Option<PathBuf> {
         self.paths.get(index).cloned()
+    }
+
+    fn ensure_local_doc(&mut self, path: &Path) -> Option<usize> {
+        // ponytail: relative f-links stay in-app; never xdg-open .md/.txt
+        if !path.is_file() {
+            return None;
+        }
+        let is_doc = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("txt"));
+        if !is_doc {
+            return None;
+        }
+        let canon = path.canonicalize().ok();
+        for (i, p) in self.paths.iter().enumerate() {
+            if p == path {
+                return Some(i);
+            }
+            if let (Some(c), Ok(pc)) = (&canon, p.canonicalize()) {
+                if *c == pc {
+                    return Some(i);
+                }
+            }
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        self.names.push(name);
+        self.paths.push(canon.unwrap_or_else(|| path.to_path_buf()));
+        Some(self.paths.len() - 1)
     }
 
     fn load(&mut self, index: usize, width: usize) -> LoadResult {
@@ -74,5 +106,26 @@ impl ContentSource for FileTreeSource {
                 headings,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin::ContentSource;
+
+    #[test]
+    fn ensure_local_doc_appends_md() {
+        let readme = PathBuf::from("README.md");
+        assert!(readme.is_file(), "run from repo root");
+        let mut src = FileTreeSource::new(vec![("README.md".into(), readme.clone())]);
+        assert_eq!(src.entries().len(), 1);
+        let status = PathBuf::from("docs/STATUS.md");
+        assert!(status.is_file());
+        let i = src.ensure_local_doc(&status).expect("append status");
+        assert_eq!(i, 1);
+        assert_eq!(src.entries().len(), 2);
+        // second call is idempotent
+        assert_eq!(src.ensure_local_doc(&status), Some(1));
     }
 }

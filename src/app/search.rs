@@ -14,40 +14,44 @@ pub struct MatchHit {
 }
 
 pub fn find_hits(body: &[Line<'static>], query: &str) -> Vec<MatchHit> {
-    if query.is_empty() {
-        return Vec::new();
-    }
-    let q: Vec<char> = query.to_lowercase().chars().collect();
-    let m = q.len();
-    if m == 0 {
+    // ponytail: whitespace tokens → each token's real substrings (orderless)
+    let tokens: Vec<Vec<char>> = query
+        .split_whitespace()
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_lowercase().chars().collect())
+        .collect();
+    if tokens.is_empty() {
         return Vec::new();
     }
     let mut out = Vec::new();
     for (li, line) in body.iter().enumerate() {
         let text = App::line_plain(line);
-        let chars: Vec<char> = text.chars().collect();
         let lower: Vec<char> = text
             .chars()
             .map(|c| c.to_lowercase().next().unwrap_or(c))
             .collect();
-        let n = chars.len();
-        if n < m {
-            continue;
-        }
-        let mut i = 0;
-        while i + m <= n {
-            if lower[i..i + m] == q[..] {
-                out.push(MatchHit {
-                    line: li,
-                    start: i,
-                    end: i + m,
-                });
-                i += m; // non-overlapping; simple
-            } else {
-                i += 1;
+        let n = lower.len();
+        for q in &tokens {
+            let m = q.len();
+            if m == 0 || m > n {
+                continue;
+            }
+            let mut i = 0;
+            while i + m <= n {
+                if lower[i..i + m] == q[..] {
+                    out.push(MatchHit {
+                        line: li,
+                        start: i,
+                        end: i + m,
+                    });
+                    i += m; // non-overlapping; simple
+                } else {
+                    i += 1;
+                }
             }
         }
     }
+    out.sort_by_key(|h| (h.line, h.start));
     out
 }
 

@@ -33,14 +33,10 @@ pub struct NavState {
     pub query: String,
     /// Filtered indices into links/headings/consult hits.
     pub filtered: Vec<usize>,
+    /// consult hit cap (500) reached.
+    pub truncated: bool,
 }
 
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct ConsultHit {
-    pub line: usize,
-    pub preview: String,
-}
 
 impl App {
     pub fn nav_open(&self) -> bool {
@@ -58,6 +54,7 @@ impl App {
             scroll: 0,
             query: String::new(),
             filtered: (0..self.links.len()).collect(),
+            truncated: false,
         };
         self.status = "links — type 过滤 · ↑↓ Enter · Esc".into();
     }
@@ -88,6 +85,7 @@ impl App {
             scroll: 0,
             query: String::new(),
             filtered: (0..self.headings.len()).collect(),
+            truncated: false,
         };
         if let Some(pos) = self.nav.filtered.iter().position(|&i| i == sel) {
             self.nav.selected = pos;
@@ -107,35 +105,61 @@ impl App {
             scroll: 0,
             query: String::new(),
             filtered: Vec::new(),
+            truncated: false,
         };
         self.refilter_consult();
-        self.status = "consult — type to filter · ↑↓ · Enter jump · Esc".into();
     }
 
     pub(crate) fn close_nav(&mut self) {
         self.nav.overlay = None;
         self.nav.query.clear();
         self.nav.filtered.clear();
+        self.nav.truncated = false;
         self.status = "nav closed".into();
     }
 
     fn refilter_consult(&mut self) {
-        let q = self.nav.query.to_lowercase();
+        // ponytail: orderless AND of whitespace tokens; 500-cap, no fuzzy lib
+        let tokens: Vec<String> = self
+            .nav
+            .query
+            .split_whitespace()
+            .map(|t| t.to_lowercase())
+            .filter(|t| !t.is_empty())
+            .collect();
         let mut hits = Vec::new();
+        let mut truncated = false;
         for (i, line) in self.body.iter().enumerate() {
-            let t = Self::line_plain(line);
-            if q.is_empty() || t.to_lowercase().contains(&q) {
+            let tl = Self::line_plain(line).to_lowercase();
+            if tokens.is_empty() || tokens.iter().all(|t| tl.contains(t)) {
                 hits.push(i);
-            }
-            if hits.len() >= 500 {
-                break;
+                if hits.len() >= 500 {
+                    truncated = true;
+                    break;
+                }
             }
         }
         self.nav.filtered = hits;
+        self.nav.truncated = truncated;
         if self.nav.selected >= self.nav.filtered.len() {
             self.nav.selected = self.nav.filtered.len().saturating_sub(1);
         }
         self.nav.scroll = 0;
+        self.refresh_consult_status();
+    }
+
+    fn refresh_consult_status(&mut self) {
+        let n = self.nav.filtered.len();
+        if n == 0 {
+            self.status = "consult 0".into();
+            return;
+        }
+        let sel = self.nav.selected + 1;
+        self.status = if self.nav.truncated {
+            format!("consult {sel}/{n}+ (truncated)")
+        } else {
+            format!("consult {sel}/{n}")
+        };
     }
 
     /// Shared type-to-filter for list overlays (Toc / Links). Ready to reuse for more `o`-style jumps.
@@ -190,12 +214,18 @@ impl App {
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.nav.selected = self.nav.selected.saturating_sub(1);
+                if mode == Overlay::Consult {
+                    self.refresh_consult_status();
+                }
                 return true;
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 if !self.nav.filtered.is_empty() {
                     self.nav.selected =
                         (self.nav.selected + 1).min(self.nav.filtered.len() - 1);
+                }
+                if mode == Overlay::Consult {
+                    self.refresh_consult_status();
                 }
                 return true;
             }
@@ -243,8 +273,18 @@ impl App {
                 }
             }
             Overlay::Consult => {
+                // keep tokens so body highlight shows real matched substrings
+                let q = self.nav.query.clone();
                 self.ensure_line_visible(idx);
                 self.scroll = idx as u16;
+                self.vim_query = q;
+                self.vim_match_idx = 0;
+                if !self.vim_query.is_empty() {
+                    let hits = self.match_hits();
+                    if let Some(i) = hits.iter().position(|h| h.line == idx) {
+                        self.vim_match_idx = i;
+                    }
+                }
                 self.status = format!("jumped to line {}", idx + 1);
             }
         }
@@ -274,7 +314,7 @@ impl App {
             }
             return;
         }
-        // local relative file
+        // local relative file — prefer in-app open for md/txt (never hand TTY to lynx)
         let base = self
             .current_path()
             .and_then(|p| p.parent().map(|d| d.to_path_buf()))
@@ -289,13 +329,13 @@ impl App {
         }
         let resolved = base.join(file_part);
         if resolved.is_file() {
-            // try switch within source entries
-            if let Some(i) = self.find_entry_for_path(&resolved) {
-                // select that entry
+            let idx = self
+                .find_entry_for_path(&resolved)
+                .or_else(|| self.source.ensure_local_doc(&resolved));
+            if let Some(i) = idx {
                 if let Some(pos) = self.filtered.iter().position(|&di| di == i) {
                     self.list_sel = pos;
                 } else {
-                    // not in filter — clear filter
                     self.filter.clear();
                     self.refilter();
                     if let Some(pos) = self.filtered.iter().position(|&di| di == i) {
@@ -314,7 +354,6 @@ impl App {
                 }
                 self.status = format!("opened: {}", resolved.display());
             } else {
-                // open externally if not in tree
                 match open_external(&resolved.to_string_lossy()) {
                     Ok(()) => self.status = format!("opened external: {}", resolved.display()),
                     Err(e) => self.status = format!("open failed: {e}"),
@@ -387,7 +426,8 @@ fn heading_slug(text: &str) -> String {
 }
 
 fn open_external(target: &str) -> Result<(), String> {
-    // ponytail: xdg-open / open / cmd — no extra crate
+    // ponytail: xdg-open / open / cmd — null stdio so TUI terminal stays intact
+    use std::process::Stdio;
     let cmds: &[&[&str]] = if cfg!(target_os = "macos") {
         &[&["open", target]]
     } else if cfg!(target_os = "windows") {
@@ -397,7 +437,13 @@ fn open_external(target: &str) -> Result<(), String> {
     };
     let mut last = String::from("no opener");
     for c in cmds {
-        match Command::new(c[0]).args(&c[1..]).spawn() {
+        match Command::new(c[0])
+            .args(&c[1..])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
             Ok(_) => return Ok(()),
             Err(e) => last = format!("{}: {e}", c[0]),
         }
@@ -536,8 +582,20 @@ fn draw_consult(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     .split(area);
     let panel = chunks[1];
     frame.render_widget(Clear, panel);
+
+    let n = app.nav.filtered.len();
+    let title = if n == 0 {
+        " consult 0 ".to_string()
+    } else {
+        let sel = app.nav.selected + 1;
+        if app.nav.truncated {
+            format!(" consult {sel}/{n}+ ")
+        } else {
+            format!(" consult {sel}/{n} ")
+        }
+    };
     let block = Block::default()
-        .title(" consult (Alt+f) ")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border()));
     let inner = block.inner(panel);
@@ -556,8 +614,21 @@ fn draw_consult(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         v[0],
     );
 
+    let tokens: Vec<String> = app
+        .nav
+        .query
+        .split_whitespace()
+        .map(|t| t.to_lowercase())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let hit_style = Style::default()
+        .fg(theme.status_focus_fg())
+        .bg(theme.search_text())
+        .add_modifier(Modifier::BOLD);
+    let normal = Style::default().fg(theme.list_text());
     let hits = &app.nav.filtered;
-    let visible = v[1].height as usize;
+    // List TOP border + title eats 1 row — without this, rows past ~height-1 look unstyled
+    let visible = v[1].height.saturating_sub(1).max(1) as usize;
     let start = if app.nav.selected >= visible {
         app.nav.selected + 1 - visible
     } else {
@@ -574,43 +645,56 @@ fn draw_consult(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
                 .get(line)
                 .map(App::line_plain)
                 .unwrap_or_default();
-            let label = format!("{:>4} │ {}", line + 1, trunc(&plain, 80));
-            let style = if sel {
-                Style::default()
-                    .fg(theme.status_focus_fg())
-                    .bg(theme.search_text())
+            let text = trunc(&plain, 80);
+            // line number never highlighted; only query tokens in the text
+            let prefix = if sel {
+                format!("▶{:>3} │ ", line + 1)
             } else {
-                Style::default().fg(theme.list_text())
+                format!(" {:>3} │ ", line + 1)
             };
-            ListItem::new(Line::from(Span::styled(label, style)))
+            let mut spans = vec![Span::styled(prefix, normal)];
+            spans.extend(token_highlight_spans(&text, &tokens, normal, hit_style));
+            ListItem::new(Line::from(spans))
         })
         .collect();
+    let hits_title = if app.nav.truncated {
+        format!(" {} hits (truncated) ", hits.len())
+    } else {
+        format!(" {} hits ", hits.len())
+    };
     frame.render_widget(
         List::new(items).block(
             Block::default()
                 .borders(Borders::TOP)
-                .title(format!(" {} hits ", hits.len())),
+                .title(hits_title),
         ),
         v[1],
     );
 
-    // preview: ±2 lines around selected
+    // preview: ±2 lines around selected; highlight match line tokens
+    const CONSULT_PREVIEW_CTX: usize = 2;
     let preview_line = hits.get(app.nav.selected).copied();
     let mut prev_lines = Vec::new();
     if let Some(li) = preview_line {
-        let from = li.saturating_sub(2);
-        let to = (li + 3).min(app.body.len());
+        let from = li.saturating_sub(CONSULT_PREVIEW_CTX);
+        let to = (li + CONSULT_PREVIEW_CTX + 1).min(app.body.len());
         for i in from..to {
             let mark = if i == li { "▶ " } else { "  " };
             let t = app.body.get(i).map(App::line_plain).unwrap_or_default();
-            let style = if i == li {
+            let base = if i == li {
                 Style::default()
                     .fg(theme.accent())
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme.muted())
             };
-            prev_lines.push(Line::from(Span::styled(format!("{mark}{t}"), style)));
+            let mut spans = vec![Span::styled(mark.to_string(), base)];
+            if i == li && !tokens.is_empty() {
+                spans.extend(token_highlight_spans(&t, &tokens, base, hit_style));
+            } else {
+                spans.push(Span::styled(t, base));
+            }
+            prev_lines.push(Line::from(spans));
         }
     } else {
         prev_lines.push(Line::from(Span::styled(
@@ -624,6 +708,56 @@ fn draw_consult(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
             .wrap(Wrap { trim: false }),
         v[2],
     );
+}
+
+/// Highlight all orderless tokens in plain text (case-insensitive).
+fn token_highlight_spans(
+    text: &str,
+    tokens: &[String],
+    normal: Style,
+    hit: Style,
+) -> Vec<Span<'static>> {
+    if tokens.is_empty() || text.is_empty() {
+        return vec![Span::styled(text.to_string(), normal)];
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let lower: Vec<char> = text
+        .chars()
+        .map(|c| c.to_lowercase().next().unwrap_or(c))
+        .collect();
+    let n = chars.len();
+    let mut mark = vec![false; n];
+    for tok in tokens {
+        let tchars: Vec<char> = tok.chars().collect();
+        let m = tchars.len();
+        if m == 0 || m > n {
+            continue;
+        }
+        let mut i = 0;
+        while i + m <= n {
+            if lower[i..i + m] == tchars[..] {
+                for b in &mut mark[i..i + m] {
+                    *b = true;
+                }
+                i += m;
+            } else {
+                i += 1;
+            }
+        }
+    }
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < n {
+        let on = mark[i];
+        let start = i;
+        i += 1;
+        while i < n && mark[i] == on {
+            i += 1;
+        }
+        let piece: String = chars[start..i].iter().collect();
+        spans.push(Span::styled(piece, if on { hit } else { normal }));
+    }
+    spans
 }
 
 fn centered(width: u16, height: u16, area: Rect) -> Rect {
