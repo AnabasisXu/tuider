@@ -65,7 +65,7 @@
 | 插件 id | 入口 | 依赖倾向（在插件 crate 内） |
 |---------|------|---------------------------|
 | `url` | `-u` / 裸 URL | HTTP + readability；缓存自管 |
-| `hn` | `-hn` | HTTP；缓存自管 |
+| `hn` | `-hn`（默认 cache）、`--sync` 刷新 | HTTP 仅 `--sync`/`a`；缓存自管 |
 | `dict` | `.mdx`、群组、CLI 查词 | mdict、HTML/CSS 信封 |
 | `code` | `--code` / 源码扩展 | plain → syntect → 可选 tree-sitter |
 

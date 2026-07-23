@@ -154,15 +154,15 @@ host 已移植 method A 主干（tag/class、`display:none`、`::before`、暗�
 | ID | 功能 | 说明 | 落点 |
 |----|------|------|------|
 | HN-01 | **`-hn -l` CLI Markdown 表** | ✅ **有意差异**（文档化）：`entry_at` 兼 TUI 侧栏，`-l` 只出标题行；mdx-tui 专表见 `docs/plugins.md` | hn so + host |
-| HN-02 | **评论树深度/全量** | ✅ 文档化：BFS **cap 40**（`MAX_COMMENTS`）；ponytail | hn so |
+| HN-02 | **评论树深度/全量** | ✅ 文档化：BFS **cap 20**（`MAX_COMMENTS`）；ponytail | hn so |
 | HN-03 | **Enter vs Shift+Enter 评论/原文分离** | ✅ 文档化：Enter=评论+meta，`a`=全文；保留差异 | 可保留差异，**文档化**；若要对齐则 host keys |
 
 ### 7.2 URL
 
 | ID | 功能 | 说明 |
 |----|------|------|
-| URL-01 | **缓存目录/TTL 与可清缓存 UX** | ✅ 已写入 `docs/plugins.md`（`~/.cache/tuider`、URL 无 TTL / HN TTL） |
-| URL-02 | **失败重试与错误文案** | ✅ 文档化：URL 无重试+open err；HN open 5 次退避；article 失败进正文 |
+| URL-01 | **缓存目录/TTL 与可清缓存 UX** | ✅ 已写入 `docs/plugins.md`（`~/.cache/tuider`、URL 无 TTL / HN `--sync` 时 TTL；默认 cache-only） |
+| URL-02 | **失败重试与错误文案** | ✅ 文档化：URL 无重试+open err；HN `--sync` 重试；article 失败进正文 |
 
 ### 7.3 code
 

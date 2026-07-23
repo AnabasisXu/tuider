@@ -11,7 +11,7 @@
 4. **`src/plugin_catalog.rs`** 是发行侧插件**单一知识源**：id / so 名 / summary / `claims` / `missing_plugin_hint`；`pkg` 与 `main` 只消费它。
 5. 认领顺序：`handles_args` **或** catalog `claims(id)`；缺 so 时 catalog 按 url→hn→code→dict 给 `need plugin …` 提示。
 6. yml `plugins.*.enabled: false` 可再挡一层；**不能代替「无文件」**。
-7. **无 host `cache` 模块**（已删）；网络/磁盘缓存由各插件自管。
+7. **无 host `cache` 模块**（已删）；网络/磁盘缓存由各插件自管。**HN 默认 cache-only**，`--sync` 才联网。
 
 已验证：
 

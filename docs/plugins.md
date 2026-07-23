@@ -132,30 +132,48 @@ API 侧适配后文本源 trait 名：`PluginTextSource`。App 侧已渲染源�
 | URL 页 | `pages/<fnv1a64(url)>.md`（markdown 正文） |
 | HN top | `hn/topstories.json` |
 | HN item | `hn/item/<id>.json` |
+| HN body | `hn/body/v2/<id>.md`（+ `.comments` 计数戳） |
 | HN 外链全文 | 同 URL 的 `pages/…` |
 
 **清缓存：** 删整个目录或子路径即可，例如 `rm -rf ~/.cache/tuider/pages`。无专用 CLI 清缓存命令（ponytail）。
 
-### TTL（HN）
+### HN 开关
+
+| 调用 | 网络 | 行为 |
+|------|------|------|
+| `tuider -hn` / `-hn -l` | **否** | 只读磁盘缓存（**忽略 TTL**）；无 top 缓存 → 报错提示 `--sync` |
+| `tuider -hn --sync` | **是** | 刷新 top + items；TUI 下再预建 body（meta+评论） |
+| 键 `a`（action `article`） | **是**（按需） | 抓当前条外链全文；可写 `pages/` 缓存 |
+| `-n` / `--limit` | — | 默认 **30**（`-l` 且未传 `-n` 时 **15**） |
+
+首次使用：`tuider -hn --sync`（或 `-hn --sync -l`）灌满缓存，之后日常 `tuider -hn` 秒开。
+
+### TTL（仅 `--sync` / 外链抓取写缓存时）
 
 | 键 | 时长 |
 |----|------|
-| topstories | 15 min |
+| topstories | 15 min（`--sync` 时 `cache_get_fresh`） |
 | item JSON | 6 h |
 | 外链 page | 24 h |
 
-URL 插件：命中即用（**无 TTL**；改 URL 或删文件强制刷新）。
+默认 cache-only 路径用 `cache_get_any`：**过期也读**。URL 插件：命中即用（**无 TTL**）。
+
+### HTTP / gzip
+
+HN 与 URL 的 reqwest 启用 **`gzip`** feature。部分站点（如强制 `Content-Encoding: gzip`）无此 feature 会把压缩体当 UTF-8 → 全文 `�` 乱码并污染 `pages/` 缓存；修完后删对应 `pages/<hash>.md` 再 `a`。
 
 ### 错误文案 / 重试
 
-- **URL open 失败**：`tuider_plugin_open` 经 `write_err` 返回可读字符串（网络/HTTP status/`only http(https)`/`blocked local host`）；host 打印后 exit。**无自动重试**（ponytail；加在 connect 抖动时再补）。
-- **HN open**：top 拉取最多 **5 次**指数退避（约 300ms×2^n）；失败文案 `HN open failed after retries: …`。
-- **HN 外链 article**（键 `a` / action `article`）：失败写入正文 `_article fetch failed: …_`，不崩 TUI。
+- **URL open 失败**：`tuider_plugin_open` 经 `write_err` 返回可读字符串（网络/HTTP status/`only http(https)`/`blocked local host`）；host 打印后 exit。**无自动重试**（ponytail）。
+- **HN open（`--sync`）**：top/item 拉取最多 **3** 次（list **2**）指数退避；失败文案 `HN open failed after retries: …`。
+- **HN open（默认 cache-only）**：无 `hn/topstories.json` 或条目不足 → `… — run tuider -hn --sync once to populate cache`。
+- **HN 外链 article**（键 `a`）：失败写入正文 `_article fetch failed: …_`，不崩 TUI。
 
 ### HN 与 mdx-tui 有意差异（HN-01..03）
 
 | ID | 行为 |
 |----|------|
 | **HN-01** | mdx-tui `-hn -l` 打 markdown 表；Tuider `-l` 是通用「打印 entry_at」，HN 侧栏/列表为**纯标题行**（与 TUI 侧栏共用 `entry_at`，不能塞表行）。需要表格式时进 TUI 或自行管道处理标题列表。 |
-| **HN-02** | 评论 BFS **cap 40**（`MAX_COMMENTS`）；更深树以后再开。 |
+| **HN-02** | 评论 BFS **cap 20**（`MAX_COMMENTS`）；更深树以后再开。 |
 | **HN-03** | mdx-tui：Enter/Shift+Enter 分评论与原文；Tuider：**Enter 默认评论+meta**，键 **`a`**（action `article`）再抓外链全文。保留差异。 |
+| **HN-04** | Tuider 默认 **cache-only**；`--sync` 才联网刷新。mdx-tui 若每次 open 都拉网，属有意差异。 |
