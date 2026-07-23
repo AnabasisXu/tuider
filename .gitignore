@@ -29,3 +29,6 @@ tuider.yml
 
 # Optional local notes
 *.local.md
+
+# Git worktrees
+.worktrees/
