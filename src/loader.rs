@@ -296,6 +296,9 @@ impl crate::plugin::ContentSource for HostSource {
     fn action(&mut self, index: usize, action: &str) -> bool {
         self.inner.action(index, action)
     }
+    fn has_action(&self) -> bool {
+        self.inner.plugin.action.is_some()
+    }
     fn lookup_word(&mut self, word: &str) -> Vec<(String, String)> {
         self.inner.dict_lookup(word)
     }
@@ -375,13 +378,20 @@ fn render_plugin_body_doc(
             None => ("", rest),
         };
         let table = crate::html_css::StyleTable::parse(css_src);
-        let (lines, mut headings) = crate::html_render::html_to_doc(html, &table);
+        let (raw_lines, mut headings) = crate::html_render::html_to_doc(html, &table);
         // if HTML classes missed, recover `1) 2) a)` from rendered lines
         if headings.len() < 2 {
-            let fb = outline_from_lines(&lines);
+            let fb = outline_from_lines(&raw_lines);
             if fb.len() > headings.len() {
                 headings = fb;
             }
+        }
+        // Pre-wrap so scroll/outline line indices match the viewport.
+        // html_to_doc emits unwrapped logical lines; Paragraph.wrap would
+        // inflate visual rows and break Home/End/o/PgDn.
+        let (lines, map) = wrap_body_lines(raw_lines, width);
+        for h in &mut headings {
+            h.line = map.get(h.line).copied().unwrap_or(h.line);
         }
         if headings.len() > 120 {
             headings.truncate(120);
@@ -401,6 +411,26 @@ fn render_plugin_body_doc(
         let headings = outline_from_lines(&lines);
         (lines, Vec::new(), headings)
     }
+}
+
+/// Wrap each logical line to `width`; `map[i]` = first visual row of logical line i.
+fn wrap_body_lines(
+    lines: Vec<ratatui::text::Line<'static>>,
+    width: usize,
+) -> (Vec<ratatui::text::Line<'static>>, Vec<usize>) {
+    let w = width.max(1);
+    let mut out = Vec::with_capacity(lines.len());
+    let mut map = Vec::with_capacity(lines.len());
+    for line in lines {
+        map.push(out.len());
+        let wrapped = crate::md::wrap_spans(line.spans, w);
+        if wrapped.is_empty() {
+            out.push(ratatui::text::Line::from(""));
+        } else {
+            out.extend(wrapped);
+        }
+    }
+    (out, map)
 }
 
 /// Fallback outline when body has no md/HTML headings (code / plain / sparse dict).
@@ -618,6 +648,35 @@ mod body_render_tests {
         let hs = super::outline_from_lines(&lines);
         assert!(hs.iter().any(|h| h.text.contains("fn main")), "{hs:?}");
         assert!(hs.iter().any(|h| h.text.contains("pub struct App")), "{hs:?}");
+    }
+
+    #[test]
+    fn html_long_line_wraps_and_remaps_outline() {
+        // one long sense line must split; outline line points into wrapped body
+        let long = "a".repeat(120);
+        let body = format!(
+            "TUIDER_HTML_V1\n\n\u{1e}\n<div class=\"se2\"><span class=\"sensenum\">1)</span> {long}</div><div class=\"se2\"><span class=\"sensenum\">2)</span> short</div>"
+        );
+        let (lines, _, headings) = super::render_plugin_body_doc(&body, 40);
+        assert!(lines.len() > 2, "expected wrap: {} lines", lines.len());
+        let h1 = headings
+            .iter()
+            .find(|h| h.text.starts_with("1)"))
+            .expect("1) outline");
+        let h2 = headings
+            .iter()
+            .find(|h| h.text.starts_with("2)"))
+            .expect("2) outline");
+        assert!(h1.line < lines.len(), "h1.line {} >= {}", h1.line, lines.len());
+        assert!(h2.line < lines.len(), "h2.line {} >= {}", h2.line, lines.len());
+        assert!(h2.line > h1.line, "senses ordered: {h1:?} {h2:?}");
+        // first wrapped row of sense 1 should still start with 1)
+        let t0: String = lines[h1.line]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(t0.contains("1)"), "jump target: {t0}");
     }
 }
 

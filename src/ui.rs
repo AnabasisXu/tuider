@@ -3,7 +3,7 @@
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, SearchLayout};
@@ -360,7 +360,7 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(theme.accent()).add_modifier(Modifier::BOLD),
             )
         };
-        let help = vec![
+        let mut help = vec![
             Line::from(""),
             Line::from(vec![
                 Span::styled(
@@ -371,27 +371,41 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
             ]),
             Line::from(""),
             Line::from(section("  基本操作")),
-            Line::from(vec![key("    输入字符  "), desc("过滤侧栏条目")]),
-            Line::from(vec![key("    ↑ / ↓    "), desc("浏览列表（侧栏显示时）")]),
+            Line::from(vec![key("    侧栏开启  "), desc("焦点=搜索框；字母只过滤")]),
+            Line::from(vec![
+                key("    Ctrl+F   "),
+                desc(if app.can_plugin_action() {
+                    "关侧栏后 a/o/f 等命令可用"
+                } else {
+                    "关侧栏后 o/f 等命令可用"
+                }),
+            ]),
+            Line::from(vec![key("    ↑ / ↓    "), desc("浏览列表（预取正文）")]),
             Line::from(vec![key("    Enter    "), desc("打开 / 重载选中")]),
-            Line::from(vec![key("    a        "), desc("抓取全文（状态栏提示）")]),
-            Line::from(vec![key("    [ / ]    "), desc("跳到上一/下一章节")]),
+        ];
+        if app.can_plugin_action() {
+            help.push(Line::from(vec![
+                key("    a        "),
+                desc("抓取外链全文（侧栏关，HN）"),
+            ]));
+        }
+        help.extend([
+            Line::from(vec![key("    [ / ]    "), desc("上一/下一主节（侧栏关）")]),
             Line::from(""),
             Line::from(section("  快捷键")),
-            Line::from(vec![key("    Ctrl+F   "), desc("显示/隐藏侧栏")]),
             Line::from(vec![key("    Ctrl+S   "), desc("搜索布局：左侧 / 顶部")]),
-            Line::from(vec![key("    /        "), desc("正文 vim 搜索")]),
+            Line::from(vec![key("    /        "), desc("正文 vim 搜索（侧栏关）")]),
             Line::from(vec![key("    n / N    "), desc("下一/上一匹配")]),
             Line::from(vec![key("    v / V    "), desc("字符/行 visual · y 复制")]),
-            Line::from(vec![key("    f / o    "), desc("链接 / 大纲(打字过滤)")]),
+            Line::from(vec![key("    f / o    "), desc("链接 / 大纲（侧栏关）")]),
             Line::from(vec![key("    Alt+f    "), desc("consult 搜索预览跳转")]),
-            Line::from(vec![key("    O        "), desc("打开当前文件目录")]),
+            Line::from(vec![key("    O        "), desc("打开目录（侧栏关）")]),
             Line::from(vec![key("    ?        "), desc("帮助")]),
             Line::from(""),
             Line::from(section("  滚动")),
             Line::from(vec![key("    ↑↓ / Pg  "), desc("焦点区")]),
             Line::from(vec![key("    Alt+↑↓   "), desc("另一区（通常正文）")]),
-        ];
+        ]);
         frame.render_widget(Paragraph::new(help), inner);
         return;
     }
@@ -429,10 +443,9 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
             line
         })
         .collect();
+    // body lines are pre-wrapped to content_width (loader); no Paragraph wrap
     frame.render_widget(
-        Paragraph::new(rendered)
-            .scroll((scroll, 0))
-            .wrap(Wrap { trim: false }),
+        Paragraph::new(rendered).scroll((scroll, 0)),
         inner,
     );
 }
@@ -582,15 +595,15 @@ fn draw_vim_search(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_help_overlay(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
-    let entries: &[(&str, &str)] = if app.vim_search_mode() {
-        &[
+    let mut entries: Vec<(&str, &str)> = if app.vim_search_mode() {
+        vec![
             ("Enter", "Confirm search"),
             ("Esc", "Cancel"),
             ("n/N", "Next / prev match"),
             ("?", "Close help"),
         ]
     } else {
-        &[
+        vec![
             ("Type", "Filter sidebar (live)"),
             ("↑/↓", "List (sidebar on)"),
             ("Ctrl+F", "Toggle sidebar (not search layout)"),
@@ -602,8 +615,7 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
             ("Esc", "Clear filter / result / panel"),
             ("Tab", "Cycle dict / source layer"),
             ("/", "In-content search"),
-            ("a", "Fetch full article (plugins)"),
-            ("[/]", "Prev/next section"),
+            ("[/]", "Prev/next major section"),
             ("o", "Outline / filter headings"),
             ("v/V", "Visual select"),
             ("y", "Yank selection (OSC 52)"),
@@ -613,6 +625,11 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
             ("?", "Close help"),
         ]
     };
+    if !app.vim_search_mode() && app.can_plugin_action() {
+        if let Some(i) = entries.iter().position(|(k, _)| *k == "/") {
+            entries.insert(i + 1, ("a", "Fetch full article (HN)"));
+        }
+    }
     let help_height = (entries.len() as u16) + 4;
     let help_width: u16 = 44;
     let popup = centered_rect(help_width, help_height, area);

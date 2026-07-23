@@ -63,6 +63,14 @@ impl App {
     }
 
     pub(crate) fn open_toc(&mut self) {
+        // lazy load so HN/list browse can o after ↑↓ without prior Enter
+        if self.headings.is_empty() {
+            if let Some(di) = self.selected_doc_index() {
+                if self.loaded_doc != Some(di) {
+                    self.load_selected();
+                }
+            }
+        }
         if self.headings.is_empty() {
             self.status = "no outline / 义项 in document".into();
             return;
@@ -86,6 +94,7 @@ impl App {
         }
         self.status = "o 大纲/义项 — 打字过滤 · ↑↓ Enter 跳转 · Esc".into();
     }
+
 
     pub(crate) fn open_consult(&mut self) {
         if self.body.is_empty() {
@@ -418,9 +427,13 @@ pub fn draw_nav_overlay(frame: &mut Frame, area: Rect, app: &App, theme: Theme) 
             &app.nav,
             &app.headings,
             |h: &HeadingEntry| {
+                // spaces for depth; never show markdown # (strip if present)
                 let pad = "  ".repeat(h.level.saturating_sub(1) as usize);
-                format!("{pad}{} {}", "#".repeat(h.level as usize), h.text)
+                let t = h.text.trim_start_matches('#').trim();
+                format!("{pad}{t}")
             },
+
+
         ),
         Overlay::Consult => draw_consult(frame, area, app, theme),
     }

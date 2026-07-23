@@ -213,6 +213,10 @@ impl App {
     pub fn scroll(&self) -> u16 {
         self.scroll
     }
+    /// HN `a` / plugin action available.
+    pub fn can_plugin_action(&self) -> bool {
+        self.source.has_action()
+    }
     pub fn status(&self) -> &str {
         &self.status
     }
@@ -380,11 +384,13 @@ impl App {
             return;
         }
         self.list_sel = next;
-        // only network when selection actually changes
+        // HN bodies are prefetched at open → load is cache-hit / free
         if self.selected_doc_index() != self.loaded_doc {
             self.load_selected();
         }
     }
+
+
 
     pub(crate) fn refilter(&mut self) {
         let q = self.filter.to_lowercase();
@@ -573,63 +579,74 @@ impl App {
 
     /// Plugin-specific action then reload body (e.g. HN fetch article).
     pub(crate) fn source_action(&mut self, action: &str) {
+        if !self.source.has_action() {
+            return;
+        }
         let Some(di) = self.selected_doc_index() else {
             self.status = "no selection".into();
             return;
         };
-        if !self.source.action(di, action) {
-            self.status = format!("no action: {action}");
-            return;
+        if self.loaded_doc != Some(di) {
+            self.load_selected();
         }
+        if action == "article" {
+            self.status = "a: 抓取全文…".into();
+        }
+        // plugin sets last_action_note → STATUS trailer; always reload to surface it
+        let _ok = self.source.action(di, action);
         self.load_selected();
     }
 
-    /// Jump among H1/H2 sections: `]` next, `[` prev (article ↔ comments).
+
+
+
+    /// Jump among major sections: Meta → Article → Comments (not every subheading).
     pub(crate) fn jump_section(&mut self, dir: isize) {
         if self.headings.is_empty() {
             self.status = "no sections".into();
             return;
         }
+        let pool = major_section_pool(&self.headings);
+        if pool.is_empty() {
+            self.status = "no Meta/Article/Comments sections".into();
+            return;
+        }
         let cur = self.scroll as usize;
-        let idxs: Vec<usize> = self
-            .headings
-            .iter()
-            .enumerate()
-            .filter(|(_, h)| h.level <= 2)
-            .map(|(i, _)| i)
-            .collect();
-        let pool = if idxs.is_empty() {
-            (0..self.headings.len()).collect::<Vec<_>>()
-        } else {
-            idxs
-        };
         let mut at = 0usize;
         for (k, &hi) in pool.iter().enumerate() {
             if self.headings[hi].line <= cur {
                 at = k;
             }
         }
-        let next = if dir > 0 {
-            (at + 1).min(pool.len() - 1)
+        // from middle of section, ] goes to next; [ stays/prev
+        let mut target = if dir > 0 {
+            if self.headings[pool[at]].line < cur && at + 1 < pool.len() {
+                at + 1
+            } else {
+                (at + 1).min(pool.len() - 1)
+            }
         } else if dir < 0 {
-            at.saturating_sub(1)
+            if self.headings[pool[at]].line < cur {
+                at // jump to start of current major section
+            } else {
+                at.saturating_sub(1)
+            }
         } else {
             at
         };
-        // if already past current section start and going next from middle, advance
-        let target = if dir > 0
-            && self.headings[pool[at]].line < cur
-            && next == at
-            && at + 1 < pool.len()
-        {
-            at + 1
-        } else {
-            next
-        };
+        if dir > 0 && target == at && at + 1 < pool.len() {
+            target = at + 1;
+        }
         let h = &self.headings[pool[target]];
         self.scroll = h.line as u16;
-        self.status = format!("§ {}", h.text);
+        self.status = format!(
+            "§ {}  ({}/{})  [ ]",
+            h.text,
+            target + 1,
+            pool.len()
+        );
     }
+
 
     pub(crate) fn line_plain(line: &Line<'_>) -> String {
         line.spans
@@ -646,13 +663,91 @@ impl App {
     }
 }
 
+/// Indices of major HN-style sections for `[`/`]` (Meta / Article / Comments).
+/// Falls back to level-1 headings when those labels are absent.
+fn major_section_pool(headings: &[crate::plugin::HeadingEntry]) -> Vec<usize> {
+    const NAMES: &[&str] = &["Meta", "Article", "Comments"];
+    let mut out = Vec::new();
+    for &name in NAMES {
+        if let Some(i) = headings.iter().position(|h| {
+            h.text.eq_ignore_ascii_case(name)
+                || h.text.eq_ignore_ascii_case(&format!("# {name}"))
+                || h.text.trim_start_matches('#').trim().eq_ignore_ascii_case(name)
+        }) {
+            out.push(i);
+        }
+    }
+    if out.len() >= 2 {
+        return out;
+    }
+    // generic docs: only H1 (level 1)
+    let h1: Vec<usize> = headings
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| h.level == 1)
+        .map(|(i, _)| i)
+        .collect();
+    if h1.len() >= 2 {
+        return h1;
+    }
+    // last resort: level <= 2 but prefer sparse pool (max 8)
+    let mut pool: Vec<usize> = headings
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| h.level <= 2)
+        .map(|(i, _)| i)
+        .collect();
+    if pool.len() > 8 {
+        let step = (pool.len() / 8).max(1);
+        pool = pool.into_iter().step_by(step).take(8).collect();
+    }
+    pool
+}
+
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ratatui::text::Span;
 
     #[test]
+    fn major_pool_prefers_meta_article_comments() {
+        use crate::plugin::HeadingEntry;
+        let hs = vec![
+            HeadingEntry {
+                level: 1,
+                text: "Meta".into(),
+                line: 0,
+            },
+            HeadingEntry {
+                level: 2,
+                text: "Self-text".into(),
+                line: 5,
+            },
+            HeadingEntry {
+                level: 1,
+                text: "Article".into(),
+                line: 10,
+            },
+            HeadingEntry {
+                level: 2,
+                text: "Subsection".into(),
+                line: 12,
+            },
+            HeadingEntry {
+                level: 1,
+                text: "Comments".into(),
+                line: 40,
+            },
+        ];
+        let p = major_section_pool(&hs);
+        assert_eq!(p, vec![0, 2, 4]);
+    }
+
+    #[test]
     fn selected_plain_joins_lines() {
+
         let body = vec![
             Line::from(Span::raw("a")),
             Line::from(Span::raw("b")),
@@ -713,5 +808,24 @@ mod tests {
         assert_eq!(hits.len(), 3);
         assert_eq!(hits[0], MatchHit { line: 0, start: 0, end: 3 });
         assert_eq!(hits[2].line, 1);
+    }
+
+    #[test]
+    fn default_source_has_no_action() {
+        // trait default: no tuider_source_action (dict/md/code/url)
+        struct Empty;
+        impl crate::plugin::ContentSource for Empty {
+            fn title(&self) -> &str {
+                "t"
+            }
+            fn entries(&self) -> &[String] {
+                &[]
+            }
+            fn load(&mut self, _: usize, _: usize) -> crate::plugin::LoadResult {
+                crate::plugin::LoadResult::plain(vec![], "x".into())
+            }
+        }
+        let s = Empty;
+        assert!(!s.has_action());
     }
 }

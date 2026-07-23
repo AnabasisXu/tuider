@@ -128,12 +128,75 @@ impl App {
         alt: bool,
         shift: bool,
     ) -> bool {
+        // Sidebar search box owns focus whenever it is visible.
+        // Plain letters / symbols type into filter; single-key commands are disabled.
+        let sidebar = self.show_sidebar() && self.visual.is_none();
+
+        // --- search-box focus (sidebar on) ---------------------------------
+        if sidebar {
+            if ctrl && matches!(key.code, KeyCode::Char('u') | KeyCode::Char('U')) {
+                self.clear_filter_keep_result();
+                return false;
+            }
+            if ctrl && matches!(key.code, KeyCode::Char('w') | KeyCode::Char('W')) {
+                self.delete_filter_word();
+                return false;
+            }
+            if alt && matches!(key.code, KeyCode::Backspace) {
+                self.delete_filter_word();
+                return false;
+            }
+            // Enter opens selection (not a "command letter")
+            if key.code == KeyCode::Enter && key.modifiers == KeyModifiers::NONE && !alt && !ctrl {
+                self.load_selected();
+                return false;
+            }
+            // Tab still cycles dicts while filtering
+            if key.code == KeyCode::Tab && key.modifiers == KeyModifiers::NONE {
+                if self.source.cycle_layer() {
+                    let keep = self.selected_doc_index();
+                    self.refilter_keep(keep);
+                    if self.selected_doc_index() != self.loaded_doc || self.loaded_doc.is_some() {
+                        self.load_selected();
+                    }
+                    self.status = format!("source: {}", self.source.title());
+                }
+                return false;
+            }
+            if !alt && !ctrl {
+                match key.code {
+                    KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE || shift => {
+                        if !c.is_control() {
+                            self.filter.push(c);
+                            self.refilter();
+                            return false;
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        self.filter.pop();
+                        self.refilter();
+                        return false;
+                    }
+                    KeyCode::Delete => {
+                        self.filter.pop();
+                        self.refilter();
+                        return false;
+                    }
+                    KeyCode::Esc => {
+                        self.clear_filter_or_result();
+                        return false;
+                    }
+                    _ => {}
+                }
+            }
+            // arrows / pgup: list nav + scroll (no letter commands)
+            self.handle_nav(key, alt, ctrl, shift, true);
+            return false;
+        }
+
+        // --- body focus (sidebar hidden) -----------------------------------
         // start visual: v = char, V = line
-        if key.modifiers == KeyModifiers::NONE
-            && self.filter.is_empty()
-            && !self.body.is_empty()
-            && self.visual.is_none()
-        {
+        if key.modifiers == KeyModifiers::NONE && !self.body.is_empty() && self.visual.is_none() {
             match key.code {
                 KeyCode::Char('v') => {
                     self.start_visual(VisualKind::Char);
@@ -147,38 +210,55 @@ impl App {
             }
         }
 
-        // mdterm: f links, o outline, Alt+f consult
-        if self.visual.is_none() && self.filter.is_empty() {
-            if key.modifiers == KeyModifiers::NONE {
-                match key.code {
-                    KeyCode::Char('f') => {
-                        self.open_links();
-                        return false;
-                    }
-                    KeyCode::Char('o') => {
-                        self.open_toc();
-                        return false;
-                    }
-                    KeyCode::Char('a') => {
-                        self.source_action("article");
-                        return false;
-                    }
-                    _ => {}
+        if self.visual.is_none() && key.modifiers == KeyModifiers::NONE {
+            match key.code {
+                KeyCode::Char('f') => {
+                    self.open_links();
+                    return false;
                 }
+                KeyCode::Char('o') => {
+                    self.open_toc();
+                    return false;
+                }
+                KeyCode::Char('a') => {
+                    // HN-only (plugin exports action); ignore on dict/md/code/url
+                    if self.source.has_action() {
+                        self.source_action("article");
+                    }
+                    return false;
+                }
+                KeyCode::Char('O') => {
+                    self.open_current_dir();
+                    return false;
+                }
+                KeyCode::Char('[') => {
+                    self.jump_section(-1);
+                    return false;
+                }
+                KeyCode::Char(']') => {
+                    self.jump_section(1);
+                    return false;
+                }
+                KeyCode::Char('/') => {
+                    self.vim_mode = true;
+                    self.vim_input.clear();
+                    return false;
+                }
+                _ => {}
             }
+        }
+
+        if self.visual.is_none() {
             if alt && matches!(key.code, KeyCode::Char('f') | KeyCode::Char('F')) {
                 self.open_consult();
                 return false;
             }
-            // O / Alt+o → open containing directory
-            if (key.modifiers == KeyModifiers::NONE && key.code == KeyCode::Char('O'))
-                || (alt && matches!(key.code, KeyCode::Char('o') | KeyCode::Char('O')))
-            {
+            if alt && matches!(key.code, KeyCode::Char('o') | KeyCode::Char('O')) {
                 self.open_current_dir();
                 return false;
             }
         }
-        // Tab: cycle multi-layer source (dict plugin); AI mode keeps Tab for providers
+
         if key.code == KeyCode::Tab && key.modifiers == KeyModifiers::NONE {
             if self.source.cycle_layer() {
                 let keep = self.selected_doc_index();
@@ -191,18 +271,6 @@ impl App {
             return false;
         }
 
-        // vim enter
-        if matches!(key.code, KeyCode::Char('/'))
-            && key.modifiers == KeyModifiers::NONE
-            && self.filter.is_empty()
-            && self.visual.is_none()
-        {
-            self.vim_mode = true;
-            self.vim_input.clear();
-            return false;
-        }
-
-        // n/N when query active
         if !self.vim_query.is_empty() && key.modifiers == KeyModifiers::NONE {
             match key.code {
                 KeyCode::Char('n') => {
@@ -217,9 +285,6 @@ impl App {
             }
         }
 
-        let sidebar = self.show_sidebar() && self.visual.is_none();
-
-        // Enter always opens selection (sidebar or not)
         if key.code == KeyCode::Enter
             && key.modifiers == KeyModifiers::NONE
             && self.visual.is_none()
@@ -230,52 +295,10 @@ impl App {
             return false;
         }
 
-        // Filter edit keys (sidebar search box). Ctrl+U always when sidebar can filter.
-        if sidebar {
-            if ctrl && matches!(key.code, KeyCode::Char('u') | KeyCode::Char('U')) {
-                self.clear_filter_keep_result();
-                return false;
-            }
-            if ctrl && matches!(key.code, KeyCode::Char('w') | KeyCode::Char('W')) {
-                self.delete_filter_word();
-                return false;
-            }
-            if alt && matches!(key.code, KeyCode::Backspace) {
-                self.delete_filter_word();
-                return false;
-            }
-            if !alt && !ctrl {
-                match key.code {
-                    KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE || shift => {
-                        if !c.is_control() && c != 'v' && c != 'V' {
-                            self.filter.push(c);
-                            self.refilter();
-                            return false;
-                        }
-                    }
-                    KeyCode::Backspace => {
-                        self.filter.pop();
-                        self.refilter();
-                        return false;
-                    }
-                    KeyCode::Delete => {
-                        // ponytail: cursor always end — Delete = Backspace
-                        self.filter.pop();
-                        self.refilter();
-                        return false;
-                    }
-                    KeyCode::Esc => {
-                        self.clear_filter_or_result();
-                        return false;
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        self.handle_nav(key, alt, ctrl, shift, sidebar);
+        self.handle_nav(key, alt, ctrl, shift, false);
         false
     }
+
 
 
     /// Global chords. Returns true = quit.
@@ -448,20 +471,22 @@ impl App {
             }
             KeyCode::Home => self.scroll = 0,
             KeyCode::End => {
-                self.scroll = self.body.len().saturating_sub(1) as u16;
+                // last viewport page (not last line) — matches draw_content max_scroll
+                let h = self
+                    .content_area
+                    .map(|a| a.height.saturating_sub(1) as usize)
+                    .unwrap_or(1)
+                    .max(1);
+                self.scroll = self.body.len().saturating_sub(h) as u16;
             }
             KeyCode::Esc if !sidebar && !self.vim_query.is_empty() => {
                 self.vim_query.clear();
                 self.status = "search cleared".into();
             }
-            // jump article / comments section
-            KeyCode::Char('[') if key.modifiers == KeyModifiers::NONE => {
-                self.jump_section(-1);
-            }
-            KeyCode::Char(']') if key.modifiers == KeyModifiers::NONE => {
-                self.jump_section(1);
-            }
+            // [ ] section jump handled in handle_normal_key when filter empty
             _ => {}
+
+
         }
     }
 }

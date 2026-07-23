@@ -52,6 +52,10 @@ pub trait ContentSource: Send {
     fn action(&mut self, _index: usize, _action: &str) -> bool {
         false
     }
+    /// True if plugin exports `tuider_source_action` (e.g. HN `a`).
+    fn has_action(&self) -> bool {
+        false
+    }
     /// Dict tools: (dict_title, definition_text) pairs.
     fn lookup_word(&mut self, _word: &str) -> Vec<(String, String)> {
         Vec::new()

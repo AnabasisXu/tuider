@@ -777,7 +777,7 @@ fn strip_tags(s: &str) -> String {
     }
     out
 }
-fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Line<'static>> {
+pub(crate) fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Line<'static>> {
     if width == 0 {
         return vec![Line::from(spans)];
     }
