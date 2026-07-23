@@ -32,3 +32,6 @@ tuider.yml
 
 # Git worktrees
 .worktrees/
+
+# Compare workflow run artifacts
+/docs/compare/runs/
