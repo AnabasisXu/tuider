@@ -417,7 +417,7 @@ CORE OPTIONS:
     -W                list configured wordlists
     --html            CLI: raw HTML definitions
     --db              export each .mdx to sibling .db (no TUI)
-    --sync            with -hn: also prefetch article bodies (first 3)
+    --sync            with -hn: refresh top stories from network (default: cache only)
 
     -h, --help
     -V, --version

@@ -1,8 +1,8 @@
 //! HN plugin cdylib — libtuider_hn.so
 //!
-//! Sidebar = top stories. Enter → meta + self-text + comments.
-//! `a` / action "article" → also fetch linked article body.
-
+//! Sidebar = top stories. Default `-hn` reads disk cache only.
+//! `--sync` refreshes top/items from network. Enter → meta + comments.
+//! `a` / action "article" → fetch linked article body.
 
 use std::os::raw::{c_char, c_int, c_void};
 use std::ffi::CStr;
@@ -21,8 +21,7 @@ const HN_BASE: &str = "https://hacker-news.firebaseio.com/v0";
 const TTL_TOP: Duration = Duration::from_secs(15 * 60);
 const TTL_ITEM: Duration = Duration::from_secs(6 * 60 * 60);
 const TTL_PAGE: Duration = Duration::from_secs(24 * 60 * 60);
-/// `--sync`: prefetch article HTML→md for first N top stories.
-const SYNC_ARTICLE_N: usize = 3;
+// ponytail: open-time article prefetch removed; `a` / --sync list refresh only
 
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -51,7 +50,7 @@ struct Story {
     by: String,
     comments: u32,
     kids: Option<Vec<u64>>,
-    /// meta + self-text + comments (no article); filled at open for TUI.
+    /// meta + self-text + comments (no article).
     body_base: Option<String>,
     /// Full body including optional article section.
     body: Option<String>,
@@ -65,6 +64,8 @@ struct Story {
 struct HnState {
     entries: Vec<String>,
     stories: Vec<Story>,
+    /// false: open/list from disk cache only; true: network ok (`--sync`).
+    allow_net: bool,
 }
 
 
@@ -103,8 +104,8 @@ pub unsafe extern "C" fn tuider_plugin_open(
     let list_only = args
         .iter()
         .any(|a| matches!(a.as_str(), "-l" | "--list" | "--print" | "--lite"));
-    // --sync: also prefetch article bodies for first SYNC_ARTICLE_N stories
-    let sync_articles = args.iter().any(|a| a == "--sync");
+    // --sync: network refresh; default -hn is cache-only
+    let allow_net = args.iter().any(|a| a == "--sync");
     let mut i = 0;
     while i < args.len() {
         if (args[i] == "-n" || args[i] == "--limit") && i + 1 < args.len() {
@@ -119,21 +120,23 @@ pub unsafe extern "C" fn tuider_plugin_open(
         limit = 15;
     }
     if list_only {
-        eprintln!("hn: fetching top {limit}…");
+        if allow_net {
+            eprintln!("hn: fetching top {limit}…");
+        } else {
+            eprintln!("hn: cache top {limit}…");
+        }
     }
-    match fetch_top(limit, list_only) {
+    match fetch_top(limit, list_only, allow_net) {
         Ok(mut state) => {
             if list_only {
                 eprintln!("hn: {} stories", state.entries.len());
-            } else {
+            } else if allow_net {
+                // snappy Enter after explicit refresh
                 eprintln!("hn: prefetch {} stories (meta+comments)…", state.stories.len());
                 prefetch_story_bodies(&mut state);
-                if sync_articles {
-                    let n = SYNC_ARTICLE_N.min(state.stories.len());
-                    eprintln!("hn: --sync article bodies for first {n}…");
-                    prefetch_articles(&mut state, n);
-                }
                 eprintln!("hn: ready");
+            } else {
+                eprintln!("hn: cache {} stories (no net; --sync to refresh)", state.stories.len());
             }
             Box::into_raw(Box::new(state)) as *mut c_void
         }
@@ -196,7 +199,8 @@ pub unsafe extern "C" fn tuider_source_load_body(
     };
     // rebuild full body if missing
     if story.body.is_none() {
-        story.body = Some(compose_full_body(story));
+        let allow_net = s.allow_net;
+        story.body = Some(compose_full_body(story, allow_net));
     }
     let body = story.body.as_deref().unwrap_or("");
     let hint = story
@@ -259,12 +263,15 @@ pub unsafe extern "C" fn tuider_source_action(
 pub unsafe extern "C" fn tuider_string_free(s: *mut c_char) {
     unsafe { free_cstring(s) };
 }
-fn fetch_top(limit: usize, list_only: bool) -> Result<HnState, String> {
+fn fetch_top(limit: usize, list_only: bool, allow_net: bool) -> Result<HnState, String> {
+    if !allow_net {
+        return fetch_top_cache(limit, list_only);
+    }
     // ponytail: firebase blip — 2 tries for list, 3 for TUI
     let tries = if list_only { 2 } else { 3 };
     let mut last = String::from("HN: fetch failed");
     for attempt in 0..tries {
-        match fetch_top_once(limit, list_only) {
+        match fetch_top_once(limit, list_only, true) {
             Ok(s) => return Ok(s),
             Err(e) => {
                 last = e;
@@ -279,35 +286,56 @@ fn fetch_top(limit: usize, list_only: bool) -> Result<HnState, String> {
     Err(format!("HN open failed after retries: {last}"))
 }
 
-fn fetch_top_once(limit: usize, list_only: bool) -> Result<HnState, String> {
+fn fetch_top_cache(limit: usize, list_only: bool) -> Result<HnState, String> {
+    fetch_top_once(limit, list_only, false).map_err(|e| {
+        if e.contains("no cache") || e.contains("no stories") {
+            format!("{e} — run `tuider -hn --sync` once to populate cache")
+        } else {
+            e
+        }
+    })
+}
+
+fn fetch_top_once(limit: usize, list_only: bool, allow_net: bool) -> Result<HnState, String> {
     // list: short timeout; TUI body may need more headroom later
     let timeout = if list_only {
         std::time::Duration::from_secs(8)
     } else {
         std::time::Duration::from_secs(15)
     };
-    let client = reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .connect_timeout(std::time::Duration::from_secs(5))
-        .user_agent("tuider-hn/0.1")
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = if allow_net {
+        Some(
+            reqwest::blocking::Client::builder()
+                .timeout(timeout)
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .user_agent("tuider-hn/0.1")
+                .build()
+                .map_err(|e| e.to_string())?,
+        )
+    } else {
+        None
+    };
 
-    let ids: Vec<u64> = match cache_get_fresh("hn/topstories.json", TTL_TOP) {
-        Some(raw) => serde_json::from_str(&raw).map_err(|e| e.to_string())?,
-        None => {
-            let raw = client
-                .get(format!("{HN_BASE}/topstories.json"))
-                .send()
-                .map_err(|e| e.to_string())?
-                .error_for_status()
-                .map_err(|e| e.to_string())?
-                .text()
-                .map_err(|e| e.to_string())?;
-            let ids: Vec<u64> = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
-            let _ = cache_put("hn/topstories.json", &raw);
-            ids
-        }
+    let ids: Vec<u64> = if let Some(raw) = if allow_net {
+        cache_get_fresh("hn/topstories.json", TTL_TOP)
+    } else {
+        cache_get_any("hn/topstories.json")
+    } {
+        serde_json::from_str(&raw).map_err(|e| e.to_string())?
+    } else if let Some(client) = client.as_ref() {
+        let raw = client
+            .get(format!("{HN_BASE}/topstories.json"))
+            .send()
+            .map_err(|e| e.to_string())?
+            .error_for_status()
+            .map_err(|e| e.to_string())?
+            .text()
+            .map_err(|e| e.to_string())?;
+        let ids: Vec<u64> = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        let _ = cache_put("hn/topstories.json", &raw);
+        ids
+    } else {
+        return Err("HN: no cache for topstories".into());
     };
 
     // ponytail: parallel item GET; Firebase is latency-bound
@@ -316,7 +344,13 @@ fn fetch_top_once(limit: usize, list_only: bool) -> Result<HnState, String> {
         .into_iter()
         .map(|id| {
             let client = client.clone();
-            std::thread::spawn(move || load_item_cached(&client, id).map(|item| (id, item)))
+            std::thread::spawn(move || {
+                if let Some(c) = client.as_ref() {
+                    load_item_cached(c, id).map(|item| (id, item))
+                } else {
+                    load_item_disk(id).map(|item| (id, item))
+                }
+            })
         })
         .collect();
 
@@ -357,9 +391,23 @@ fn fetch_top_once(limit: usize, list_only: bool) -> Result<HnState, String> {
 
     }
     if entries.is_empty() {
-        return Err("HN: no stories".into());
+        return Err(if allow_net {
+            "HN: no stories".into()
+        } else {
+            "HN: no stories in cache".into()
+        });
     }
-    Ok(HnState { entries, stories })
+    Ok(HnState {
+        entries,
+        stories,
+        allow_net,
+    })
+}
+
+fn load_item_disk(id: u64) -> Option<HnItem> {
+    let rel = format!("hn/item/{id}.json");
+    let raw = cache_get_any(&rel)?;
+    serde_json::from_str(&raw).ok()
 }
 
 fn load_item_cached(client: &reqwest::blocking::Client, id: u64) -> Option<HnItem> {
@@ -409,16 +457,20 @@ fn prefetch_story_bodies(state: &mut HnState) {
         .map(|(i, id, comments, title, url, score, by, kids)| {
             let text = texts[i].clone();
             std::thread::spawn(move || {
-                let base = load_or_build_base(StorySnap {
-                    id,
-                    title,
-                    url,
-                    text,
-                    score,
-                    by,
-                    comments,
-                    kids,
-                });
+                // only called after --sync
+                let base = load_or_build_base(
+                    StorySnap {
+                        id,
+                        title,
+                        url,
+                        text,
+                        score,
+                        by,
+                        comments,
+                        kids,
+                    },
+                    true,
+                );
                 (i, base)
             })
         })
@@ -429,7 +481,7 @@ fn prefetch_story_bodies(state: &mut HnState) {
             if let Some(story) = state.stories.get_mut(i) {
                 story.body_base = Some(base.clone());
                 if story.include_article {
-                    story.body = Some(compose_full_body(story));
+                    story.body = Some(compose_full_body(story, true));
                 } else {
                     story.body = Some(base);
                 }
@@ -459,25 +511,38 @@ fn body_count_rel(id: u64) -> String {
 }
 
 
-/// Disk cache hit only if TTL ok AND comment count still matches (incremental).
-fn load_or_build_base(s: StorySnap) -> String {
+/// Disk cache hit when present. Fresh TTL only when `allow_net` (build path nets).
+fn load_or_build_base(s: StorySnap, allow_net: bool) -> String {
     let rel = body_base_rel(s.id);
     let crel = body_count_rel(s.id);
-    if let (Some(md), Some(nraw)) = (
-        cache_get_fresh(&rel, TTL_ITEM),
-        cache_get_fresh(&crel, TTL_ITEM),
-    ) {
+    let md_cached = if allow_net {
+        cache_get_fresh(&rel, TTL_ITEM)
+    } else {
+        cache_get_any(&rel)
+    };
+    let n_cached = if allow_net {
+        cache_get_fresh(&crel, TTL_ITEM)
+    } else {
+        cache_get_any(&crel)
+    };
+    if let (Some(md), Some(nraw)) = (md_cached, n_cached) {
         if nraw.trim().parse::<u32>().ok() == Some(s.comments) {
             return md;
         }
     }
-    let md = build_base_markdown(&s);
+    // cache-only: prefer any body cache even if comment count drifted
+    if !allow_net {
+        if let Some(md) = cache_get_any(&rel) {
+            return md;
+        }
+    }
+    let md = build_base_markdown(&s, allow_net);
     let _ = cache_put(&rel, &md);
     let _ = cache_put(&crel, &s.comments.to_string());
     md
 }
 
-fn build_base_markdown(s: &StorySnap) -> String {
+fn build_base_markdown(s: &StorySnap, allow_net: bool) -> String {
     let hn_link = format!("https://news.ycombinator.com/item?id={}", s.id);
     let link = s.url.as_deref().unwrap_or(&hn_link);
     // Fixed major sections for [ ] jump: Meta / Article / Comments
@@ -502,34 +567,38 @@ fn build_base_markdown(s: &StorySnap) -> String {
         if kids.is_empty() {
             md.push_str(&format!("_({} comments; tree not loaded)_\n", s.comments));
         } else {
-            append_comments_body(&mut md, kids);
+            append_comments_body(&mut md, kids, allow_net);
         }
     }
     md
 }
 
-fn ensure_body_base(story: &mut Story) {
+fn ensure_body_base(story: &mut Story, allow_net: bool) {
     if story.body_base.is_some() {
         return;
     }
-    let base = load_or_build_base(StorySnap {
-        id: story.id,
-        title: story.title.clone(),
-        url: story.url.clone(),
-        text: story.text.clone(),
-        score: story.score,
-        by: story.by.clone(),
-        comments: story.comments,
-        kids: story.kids.clone(),
-    });
+    let base = load_or_build_base(
+        StorySnap {
+            id: story.id,
+            title: story.title.clone(),
+            url: story.url.clone(),
+            text: story.text.clone(),
+            score: story.score,
+            by: story.by.clone(),
+            comments: story.comments,
+            kids: story.kids.clone(),
+        },
+        allow_net,
+    );
     story.body_base = Some(base);
 }
 
-fn compose_full_body(story: &mut Story) -> String {
-    ensure_body_base(story);
+fn compose_full_body(story: &mut Story, allow_net: bool) -> String {
+    ensure_body_base(story, allow_net);
     let mut md = story.body_base.clone().unwrap_or_default();
     if story.include_article {
         if let Some(url) = story.url.as_deref() {
+            // `a` always may network (explicit user action)
             match fetch_article_markdown(url) {
                 Ok(article) => {
                     let block = format_article_block(&article);
@@ -568,50 +637,6 @@ fn format_article_block(article_md: &str) -> String {
 }
 
 
-/// Prefetch article bodies for first `n` stories (`--sync`).
-fn prefetch_articles(state: &mut HnState, n: usize) {
-    let n = n.min(state.stories.len());
-    let urls: Vec<(usize, String)> = state
-        .stories
-        .iter()
-        .take(n)
-        .enumerate()
-        .filter_map(|(i, s)| s.url.clone().map(|u| (i, u)))
-        .collect();
-    let handles: Vec<_> = urls
-        .into_iter()
-        .map(|(i, url)| std::thread::spawn(move || (i, fetch_article_markdown(&url))))
-        .collect();
-    let mut results = Vec::new();
-    for h in handles {
-        if let Ok(pair) = h.join() {
-            results.push(pair);
-        }
-    }
-    for (i, res) in results {
-        let Some(story) = state.stories.get_mut(i) else {
-            continue;
-        };
-        story.include_article = true;
-        ensure_body_base(story);
-        let mut md = story.body_base.clone().unwrap_or_default();
-        match res {
-            Ok(article) => {
-                if let Some(pos) = md.find("\n---\n") {
-                    let (head, tail) = md.split_at(pos);
-                    md = format!("{head}\n\n## Article\n\n{article}\n{tail}");
-                } else {
-                    md.push_str("\n## Article\n\n");
-                    md.push_str(&article);
-                    md.push('\n');
-                }
-            }
-            Err(e) => md.push_str(&format!("\n_article fetch failed: {e}_\n\n")),
-        }
-        story.body = Some(md);
-    }
-}
-
 
 /// Host status bar hint when article not yet fetched.
 pub(crate) fn article_status_hint(story: &Story) -> Option<String> {
@@ -626,25 +651,20 @@ pub(crate) fn article_status_hint(story: &Story) -> Option<String> {
 
 // ponytail: keep Enter snappy; deep threads later / paginate
 const MAX_COMMENTS: usize = 20;
-fn append_comments(md: &mut String, root_kids: &[u64]) {
-    if root_kids.is_empty() {
-        return;
-    }
-    md.push_str("# Comments\n\n");
-    append_comments_body(md, root_kids);
-}
 
-fn append_comments_body(md: &mut String, root_kids: &[u64]) {
+fn append_comments_body(md: &mut String, root_kids: &[u64], allow_net: bool) {
     if root_kids.is_empty() {
         return;
     }
-    let Ok(client) = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(8))
-        .connect_timeout(Duration::from_secs(4))
-        .user_agent("tuider-hn/0.1")
-        .build()
-    else {
-        return;
+    let client = if allow_net {
+        reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(8))
+            .connect_timeout(Duration::from_secs(4))
+            .user_agent("tuider-hn/0.1")
+            .build()
+            .ok()
+    } else {
+        None
     };
 
     // BFS by depth; each level fetched in parallel
@@ -656,7 +676,14 @@ fn append_comments_body(md: &mut String, root_kids: &[u64]) {
             .take(MAX_COMMENTS - n)
             .map(|(id, depth)| {
                 let client = client.clone();
-                std::thread::spawn(move || (depth, load_item_cached(&client, id)))
+                std::thread::spawn(move || {
+                    let item = if let Some(c) = client.as_ref() {
+                        load_item_cached(c, id)
+                    } else {
+                        load_item_disk(id)
+                    };
+                    (depth, item)
+                })
             })
             .collect();
 
@@ -740,6 +767,11 @@ fn cache_get_fresh(rel: &str, max_age: Duration) -> Option<String> {
         return None;
     }
     std::fs::read_to_string(path).ok()
+}
+
+/// Read cache ignoring TTL (stale ok — used by cache-only `-hn`).
+fn cache_get_any(rel: &str) -> Option<String> {
+    std::fs::read_to_string(cache_root().join(rel)).ok()
 }
 
 fn cache_put(rel: &str, text: &str) -> std::io::Result<()> {
@@ -1100,7 +1132,7 @@ mod tests {
             include_article: false,
             last_action_note: None,
         };
-        let md = compose_full_body(&mut story);
+        let md = compose_full_body(&mut story, false);
         assert!(md.contains("# Meta"), "got: {md}");
         assert!(md.contains("**Link post**"), "got: {md}");
         assert!(md.contains("**url:** https://example.invalid/no-fetch"));
@@ -1133,24 +1165,38 @@ mod tests {
         story.body = None;
         assert!(story.include_article);
         assert!(story.body.is_none());
-        let md = compose_full_body(&mut story);
+        let md = compose_full_body(&mut story, true);
         assert!(md.contains("# x"));
     }
 
     #[test]
     fn live_top_one_with_comments() {
-        let Ok(mut state) = fetch_top(1, false) else {
+        let Ok(mut state) = fetch_top(1, false, true) else {
             return; // offline CI
         };
         prefetch_story_bodies(&mut state);
         let story = &mut state.stories[0];
-        let md = compose_full_body(story);
+        let md = compose_full_body(story, true);
         assert!(md.starts_with("# "));
         assert!(md.contains("**score:**"));
         let _ = md.contains("## Comments");
     }
 
-
+    #[test]
+    fn cache_only_open_without_top_cache_fails_hint() {
+        let dir = std::env::temp_dir().join(format!("tuider-hn-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        unsafe {
+            std::env::set_var("XDG_CACHE_HOME", &dir);
+        }
+        let err = match fetch_top(5, true, false) {
+            Err(e) => e,
+            Ok(_) => panic!("expected cache miss"),
+        };
+        assert!(err.contains("cache") || err.contains("--sync"), "got: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn validate_blocks_localhost() {
@@ -1187,5 +1233,28 @@ mod tests {
             page_rel("https://example.com/a"),
             page_rel("https://example.com/b")
         );
+    }
+
+    /// dfarq.homeip.net always serves gzip; without reqwest `gzip` feature the
+    /// body was decoded as UTF-8 garbage (U+FFFD) and cached as the "article".
+    #[test]
+    fn live_gzip_article_not_mojibake() {
+        let url = "https://dfarq.homeip.net/amiga-1000-ten-years-ahead-of-its-time/";
+        let rel = page_rel(url);
+        let _ = std::fs::remove_file(cache_root().join(&rel));
+        let Ok(md) = fetch_article_markdown(url) else {
+            return; // offline CI
+        };
+        assert!(
+            !md.contains('\u{fffd}'),
+            "gzip body treated as text (mojibake): {}",
+            md.chars().take(120).collect::<String>()
+        );
+        assert!(
+            md.to_ascii_lowercase().contains("amiga"),
+            "expected article text, got: {}",
+            md.chars().take(400).collect::<String>()
+        );
+        assert!(md.contains("# Article"), "got: {md}");
     }
 }

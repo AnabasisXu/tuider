@@ -11,6 +11,6 @@ name = "tuider_url"
 
 [dependencies]
 tuider-plugin-api = { path = "../tuider-plugin-api" }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "gzip"] }
 readable-readability = "0.4"
 url = "2"
