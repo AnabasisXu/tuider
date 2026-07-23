@@ -386,8 +386,8 @@ impl AiSession {
             {
                 if !c.is_control() {
                     self.insert_at_cursor(c);
-                    self.apply_input_shortcuts();
                 }
+
             }
             KeyCode::Up => self.scroll = self.scroll.saturating_sub(1),
             KeyCode::Down => self.scroll = self.scroll.saturating_add(1),
@@ -440,20 +440,6 @@ impl AiSession {
         self.send();
     }
 
-    /// Expand bare digit shortcuts (2–4). Translate is Alt+t, not "1".
-    fn apply_input_shortcuts(&mut self) {
-        let t = self.input.trim();
-        let expanded = match t {
-            "2" => Some("请用中文简明解释当前词条/文档的核心义项与用法。".to_string()),
-            "3" => Some("请给出当前词条的 3 个例句（中英对照）并标出搭配。".to_string()),
-            "4" => Some("请分析当前正文中的生词并按难度分级列表。".to_string()),
-            _ => None,
-        };
-        if let Some(s) = expanded {
-            self.input = s;
-            self.cursor = self.input.len();
-        }
-    }
 
 
     /// Handle `/exp` and `/switch` before network send. Returns true if consumed.
@@ -510,8 +496,8 @@ impl AiSession {
     }
 
     fn send(&mut self) {
-        self.apply_input_shortcuts();
         let text = self.input.trim().to_string();
+
         if text.is_empty() || self.loading {
             return;
         }
@@ -1376,23 +1362,6 @@ mod tests {
         assert!(s.open);
     }
 
-    #[test]
-    fn bare_1_no_longer_expands() {
-        let mut s = empty_session();
-        s.input = "1".into();
-        s.cursor = 1;
-        s.apply_input_shortcuts();
-        assert_eq!(s.input, "1");
-    }
-
-    #[test]
-    fn shortcut_2_expands() {
-        let mut s = empty_session();
-        s.input = "2".into();
-        s.cursor = 1;
-        s.apply_input_shortcuts();
-        assert!(s.input.contains("解释"));
-    }
 
     #[test]
     fn ctrl_j_triggers_send_path() {
