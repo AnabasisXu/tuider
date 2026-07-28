@@ -1,135 +1,162 @@
 # Tuider
 
-终端阅读器：**md / txt / 源码** 编在主程序里；**网页 · HN · MDX 词典 · EPUB** 用动态 `.so` 插件（方案 A：主程序不链接插件业务代码）。
+Slim terminal reader: **md / txt / source code** in the binary; **URL · Hacker News · MDX dict · EPUB** only after you copy their `.so` into the plugins dir (scheme A — no plugin code linked into the bin).
 
-没有对应 `.so` → 没有该功能入口。
-
-## 快速开始
+## Quick start
 
 ```fish
-cd ~/cleantest/tuider
+cd ~/cleantest/tuider   # this repo
+
 cargo build
 ./target/debug/tuider README.md
+# fish alias: tdd README.md  (does not rebuild — run cargo build after code changes)
 
-# fish 别名 tdd 指向 debug 二进制，不会重新编译；改代码后必须 cargo build
-# tdd README.md
-
-# 装插件（默认 url / hn / epub，不含 AGPL 的 dict）
+# plugins → ~/.local/share/tuider/plugins
 ./scripts/install-plugins.sh
-# 需要词典：INCLUDE_DICT=1 ./scripts/install-plugins.sh
-# 或：cargo run -- pkg install all
+# or: cargo run -- pkg install all
 
-./target/debug/tuider https://example.com          # 需 libtuider_url.so；裸 URL
-./target/debug/tuider -hn --sync                   # 刷新 HN 缓存
-./target/debug/tuider -hn                          # 默认只读缓存
-./target/debug/tuider book.epub                    # 需 libtuider_epub.so
-./target/debug/tuider /path/to/dict.mdx hello      # 需 libtuider_dict.so
+./target/debug/tuider https://example.com   # needs libtuider_url.so; bare URL; feed URL → sidebar
+./target/debug/tuider -hn --sync          # fill HN cache
+./target/debug/tuider -hn                 # cache-only by default
+./target/debug/tuider book.epub           # needs libtuider_epub.so
+./target/debug/tuider 'https://sachachua.com/blog/category/emacs-news/feed'
+# RSS/Atom → sidebar with ~180-day entries; feed body keeps links/headings/lists
 ```
 
-缺插件时：
+Missing `.so`:
 
 ```fish
-TUIDER_PLUGINS_DIR=/tmp/empty ./target/debug/tuider https://example.com
-# → need plugin `url` — copy .so …
+TUIDER_PLUGINS_DIR=/tmp/empty cargo run -- https://example.com
+# → need plugin `url` — copy .so to ...
 ```
 
-## 核心 vs 插件
+## What is core vs plugin
 
-| 主程序内 | 仅 `.so` |
-|----------|----------|
-| md / txt | **url** — 抓页 → markdown；**RSS/Atom** → 侧栏多条目 |
-| 源码高亮（syntect） | **hn** — top 故事；`a` 抓外链全文 |
-| AI 面板（默认 feature） | **dict** — MDX 群组 / CLI 查词 / corpus 全文 |
-| `/` 搜索 · visual · 大纲/链接 · line-jump · avy | **epub** — spine 章节 → markdown |
+| In `tuider` binary | Only as `libtuider_*.so` |
+|--------------------|---------------------------|
+| md / txt (`md::render`) | **url** — fetch page → markdown; **RSS/Atom feed** → multi-entry sidebar |
+| **code** highlight (syntect → HTML_V1) | **hn** — top stories; `a` = article body |
+| AI panel (default feature) | **dict** — MDX groups / CLI lookup |
+| vim search · visual yank · outline/links · line-jump · avy | **epub** — spine chapters → markdown |
 
-| crate | Linux 产物 |
-|-------|------------|
+| Crate | Linux `.so` |
+|-------|-------------|
 | `tuider-plugin-url` | `libtuider_url.so` |
 | `tuider-plugin-hn` | `libtuider_hn.so` |
 | `tuider-plugin-dict` | `libtuider_dict.so` |
 | `tuider-plugin-epub` | `libtuider_epub.so` |
 
-插件目录默认：`~/.local/share/tuider/plugins`  
-覆盖：`TUIDER_PLUGINS_DIR` 或配置里 `plugins_dir:`。
+Plugins dir: `~/.local/share/tuider/plugins`  
+Override: `TUIDER_PLUGINS_DIR` or `plugins_dir:` in config.  
+Catalog (id / claims / missing hint / pkg): `src/plugin_catalog.rs`. Host empty Cargo features `url`/`hn`/`dict`/`code` are **compat shells only** — they do not link plugins.
 
-## 用法
+## Architecture
 
 ```text
-tuider [选项] [路径…] [词…]
-tuider -g <群组> <词>           # 词典 CLI 查词（不进 TUI）
-tuider -e book.epub             # 或裸路径 *.epub
+┌──────────────────────────────────────────────────────────────────────┐
+│  CLI  main.rs                                                        │
+│  config · plugin_catalog · pkg · scan                                │
+│       │ open: FileTree  |  registry.open (handles ‖ claims)          │
+│       │ missing .so → need plugin `id` — copy .so …                  │
+│       ▼                                                              │
+│  ┌──────────────── App shell ─────────────────────────────────────┐  │
+│  │  app/{mod,keys,mode,nav,search,visual}  ·  ui · theme          │  │
+│  │  InputMode: Help > Ai > Nav > VimSearch > Visual > Normal      │  │
+│  │  (+ ai.rs overlay when feature=ai)                             │  │
+│  │           │ dyn ContentSource                                  │  │
+│  └───────────┼────────────────────────────────────────────────────┘  │
+│              ▼                                                       │
+│  ┌─ FileTreeSource ─┐     ┌─ HostSource (loader) ─────────────────┐  │
+│  │ source · md      │     │ DynSource ──dlopen──► plugins/*.so    │  │
+│  │ code → HTML_V1   │     │ url | hn | dict | epub  (ABI v1)      │  │
+│  └────────┬─────────┘     └──────────────────┬────────────────────┘  │
+│           │                                  │ body text / HTML_V1   │
+│           └──────────────┬───────────────────┘                       │
+│                          ▼                                           │
+│              loader::render_plugin_body_doc                          │
+│              ├ HTML_V1 → html_css + html_render → Lines              │
+│              ├ markdown → md::render                                 │
+│              └ plain + outline / links                               │
+└──────────────────────────────────────────────────────────────────────┘
+
+crates/
+  tuider-plugin-api     ABI + PluginTextSource + BODY_HTML_V1_PREFIX
+  tuider-plugin-{url,hn,dict,epub}   → libtuider_*.so  (not linked into bin)
+```
+
+**Rule:** no `.so` in `plugins_dir` ⇒ no CLI surface for that plugin. yml `enabled` is only a second gate.
+
+## Usage sketch
+
+```text
+tuider [OPTIONS] [PATH...] [WORD...]
+tuider -g <group> <word>          # dict CLI (no TUI), needs dict .so
+tuider -e book.epub               # or bare path ending in .epub
 tuider pkg list|install|remove …
 ```
 
-| 选项 | 作用 |
+| Flag | Role |
 |------|------|
-| `-r` | 递归扫目录 |
-| `-l` / `--print` | 打印列表/正文，不进 TUI |
-| 裸 `http(s)://…` | 打开网页或 feed（url 插件） |
-| `-hn` | HN 列表；**`--sync`** 才联网刷新 |
-| `-g` | 词典群组（`tuider.yml` 的 `groups`） |
-| `-e` / `*.epub` | 打开 EPUB |
-| `-s` / `-w` / `-n` | 跳词头 / 词表 / 限制数量 |
-| `--html` / `--db` | 原始 HTML 释义 / 导出 sibling `.db` |
-| `-h` / `-V` | 帮助 / 版本 |
+| `-r` | recursive file scan |
+| `-l` / `--print` | print list/body, no TUI |
+| bare `http(s)://…` | open URL or feed (url plugin; feed → sidebar) |
+| `-hn` / `--hn` | HN list; **`--sync`** to refresh network |
+| `-g` / `--group` | dict group |
+| `-e` / `--epub` | open EPUB (epub plugin) |
+| `-n` | limit (dicts / HN stories) |
+| `-h` / `-V` | help / version |
 
-### TUI 常用键（完整见 `?`）
+**TUI (essentials)** — `?` for full help:
 
-| 键 | 作用 |
-|----|------|
-| `Ctrl+Q` | 退出 |
-| `?` | 帮助（任意键关） |
-| `Ctrl+F` | 开关侧栏 |
-| 侧栏开 + 打字 | 过滤列表（此时单键正文命令禁用） |
-| `Enter` | 打开 / 重载 |
-| `/` `n` `N` | vim 搜索；当前命中红底；↑↓ 历史 |
-| `v` `V` `y` | 字符/行 visual · yank（OSC 52） |
-| visual 里 `d` / `a` | 选区 → 词典过滤 · AI 上下文 |
-| `s` | 视口行跳标签 |
-| `zz` | avy：输入子串 → 标签跳转 |
-| `f` / `o` | 链接 / 大纲（点蓝链复制 URL） |
-| `Alt+f` | consult：当前正文多词过滤 |
-| `Alt+Shift+f` | **corpus**：跨全部条目搜索；左右分栏选行；Enter 跳转 |
-| `O` | 打开当前文件目录 |
-| `a` | HN 外链全文（非 visual） |
-| `Ctrl+B` / `Ctrl+Y` | 词典面板 · 复制释义 |
-| `Alt+L` | AI；**Enter 发送 · Ctrl+J 换行** · `Alt+t` 译全文 |
+| Key | Action |
+|-----|--------|
+| `Ctrl+F` | toggle sidebar |
+| type | filter list (sidebar on; body single-key cmds off) |
+| `Enter` | open / reload |
+| `/` `n` `N` | vim search (↑↓ query history; current hit red) |
+| `v` `V` `y` | char visual · line visual · yank (OSC 52) |
+| visual `d` / `a` | selection → dict filter · AI context (input empty) |
+| `s` | line-jump labels (viewport) |
+| `zz` | avy char jump (type → labels) |
+| `f` / `o` | links / outline (**sidebar off**) · click blue link copies URL |
+| `Alt+f` / `Alt+Shift+f` | consult · corpus (search all entries) |
+| `O` / `Alt+o` | open current file's directory |
+| `a` | HN article action (sidebar off; not visual) |
+| `Ctrl+B` / `Ctrl+Y` | dict panel · yank definition |
+| `Alt+L` | AI panel · **Enter send · Ctrl+J newline** · `Alt+t` translate |
 
-## 配置
+## Config
 
-`~/.config/tuider.yml`（Windows：`%USERPROFILE%\.config\tuider.yml`）。  
-**第一次进 TUI** 且搜索路径上还没有配置时，会自动写一份最小模板。`-h` / `?` 会显示 `CONFIG:` 路径。
+`~/.config/tuider.yml` (Windows: `%USERPROFILE%\.config\tuider.yml`). Auto-created on **TUI entry** if none found on the search path. Help (`-h` / `?`) shows `CONFIG:` path.
 
-常用字段：
+- `ai.providers` — multi-provider; **429/5xx auto-failover** (Tab still switches manually)
+- `plugins_dir` (default `~/.local/share/tuider/plugins`; Windows `%USERPROFILE%\.local\share\tuider\plugins`)
+- `plugins.<id>.enabled: false` — extra gate **after** `.so` is present (cannot replace “no file”)
+- wordlists / groups for dict (plugin-side)
 
-- `plugins_dir` — 插件目录  
-- `plugins.<id>.enabled: false` — 有 so 之后的第二道开关（不能代替「没有文件」）  
-- `groups` / `wordlists` — 词典群组与词表  
-- `ai` / `ai.providers` — 多 provider；429/5xx 自动 failover  
+Env: `TUIDER_PLUGINS_DIR`, `TUIDER_AI_*` (see help / config).  
+`tuider pkg install` needs a **source checkout**; without it the error shows the plugins dir for manual `.so`/`.dll` copy. Windows: run `tuider.exe` (not fish `tdd`); details in [FEATURES §8](docs/FEATURES.md).
 
-环境变量：`TUIDER_PLUGINS_DIR`、`TUIDER_AI_*`（见 help）。
+## Docs
 
-Windows：请直接跑 `tuider.exe`，不要用 Cygwin PATH 里的 `tdd`（容易撞到 Pandoc）。细节见 [FEATURES §8](docs/FEATURES.md)。
+| Doc | Content |
+|-----|---------|
+| [docs/STATUS.md](docs/STATUS.md) | **Authoritative** load / ABI / package state |
+| [docs/FEATURES.md](docs/FEATURES.md) | **Functional feature reference** |
+| [docs/plugins.md](docs/plugins.md) | ABI, body HTML_V1, HN/URL cache & intentional diffs |
+| [docs/NEXT.md](docs/NEXT.md) | Next steps |
+| [docs/PLAN.md](docs/PLAN.md) | Design decisions |
+| [docs/complexity-review.md](docs/complexity-review.md) | Complexity audit (2026-07-25) |
 
-## 文档
+## License
 
-| 文档 | 内容 |
-|------|------|
-| [docs/STATUS.md](docs/STATUS.md) | **权威**加载 / ABI / 包边界 |
-| [docs/FEATURES.md](docs/FEATURES.md) | 已实现功能说明 |
-| [docs/plugins.md](docs/plugins.md) | ABI、HTML_V1、HN/URL 缓存与有意差异 |
-| [docs/NEXT.md](docs/NEXT.md) | 下一步 |
-| [docs/PLAN.md](docs/PLAN.md) | 设计决策 |
-| [docs/testing.md](docs/testing.md) | 测试注意点 |
+Core + non-dict plugins: `MIT OR Apache-2.0` — see `LICENSE-MIT` and `LICENSE-APACHE`.
 
-## 许可
+**dict plugin is AGPL-adjacent and opt-in:**
 
-核心与非 dict 插件：`MIT OR Apache-2.0`（见 `LICENSE-MIT`、`LICENSE-APACHE`）。
-
-**dict 插件依赖 AGPL，默认不装：**
-
-- `tuider-plugin-dict` 依赖 `mdx-tui-mdict`（**AGPL-3.0**）
-- `./scripts/install-plugins.sh` 默认只装 **url / hn / epub**
-- 精简包：`./scripts/package-slim.sh` → 不含 dict
-- 需要词典：`INCLUDE_DICT=1 ./scripts/install-plugins.sh` 或 `… debug with-dict`
-- 发行 tar **不要**自带 `libtuider_dict.so`，除非你同时满足 AGPL 源码与声明义务
+- `tuider-plugin-dict` depends on `mdx-tui-mdict` (**AGPL-3.0**).
+- Default `./scripts/install-plugins.sh` installs **url / hn / epub only** (slim; no `libtuider_dict.so`).
+- Slim tarball (CI / local): `./scripts/package-slim.sh` → `dist/tuider-*-slim.tar.gz` (host + url/hn/epub only).
+- To build/install dict: `INCLUDE_DICT=1 ./scripts/install-plugins.sh` or `./scripts/install-plugins.sh debug with-dict`.
+- Prebuilt / release tarballs **must not** ship `libtuider_dict.so` unless you also ship AGPL source offers and notices for that dependency.
+- Users who need MDX lookup: build dict from this repo themselves.
