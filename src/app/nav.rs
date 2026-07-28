@@ -43,6 +43,8 @@ pub struct NavState {
 pub struct CorpusHit {
     pub doc_idx: usize,
     pub entry_title: String,
+    /// Matching lines: (0-based line in plain_body, text).
+    pub lines: Vec<(usize, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +139,11 @@ impl App {
             return;
         }
         self.corpus_hits.clear();
+        // keep corpus_plain across opens — only resize if entry count changed
+        if self.corpus_plain.len() != n {
+            self.corpus_plain.clear();
+            self.corpus_plain.resize(n, None);
+        }
         self.nav = NavState {
             overlay: Some(Overlay::Corpus),
             selected: 0,
@@ -148,65 +155,102 @@ impl App {
         self.corpus_hist_idx = None;
         self.refilter_corpus();
         self.status =
-            format!("corpus {n} entries — type · C-p/n hist · ↑↓ navigate");
+            format!("corpus {n} entries — type · C-p/n hist · ↑↓ files · ←→ lines");
     }
 
     fn refilter_corpus(&mut self) {
-        let q = self.nav.query.trim().to_owned();
+        // empty query = titles only
+        // dict: plugin fulltext (lazy index) → titles only; line extract lazy on selection
+        // non-dict fallback: host scan with corpus_plain cache
+        let tokens: Vec<String> = self
+            .nav
+            .query
+            .split_whitespace()
+            .map(|t| t.to_lowercase())
+            .filter(|t| !t.is_empty())
+            .collect();
         let mut hits = Vec::new();
         let mut truncated = false;
-        let entries: Vec<String> = self.source.entries().to_vec();
-        let n = entries.len();
+        let n = self.source.entries().len();
+        if self.corpus_plain.len() != n {
+            self.corpus_plain.clear();
+            self.corpus_plain.resize(n, None);
+        }
 
-        if q.is_empty() {
-            for di in 0..n {
-                hits.push(CorpusHit {
-                    doc_idx: di,
-                    entry_title: entries[di].clone(),
-                });
-                if hits.len() >= 500 {
-                    truncated = true;
-                    break;
-                }
-            }
+        let candidates: Vec<usize> = if tokens.is_empty() {
+            (0..n.min(500)).collect()
         } else {
-            // try plugin fulltext first (dict: headword then def scan; no index)
-            let ft_hits = self.source.fulltext_search(&q, 500);
-            if !ft_hits.is_empty() {
-                let mut seen = std::collections::HashSet::new();
-                for hw in &ft_hits {
-                    if !seen.insert(hw.clone()) { continue; }
-                    if let Some(di) = entries.iter().position(|e| e == hw) {
-                        hits.push(CorpusHit {
-                            doc_idx: di,
-                            entry_title: hw.clone(),
-                        });
-                    }
-                    if hits.len() >= 500 { truncated = true; break; }
+            let q = self.nav.query.trim();
+            let ft = self.source.fulltext_search(q, 500);
+            if !ft.is_empty() {
+                let entries = self.source.entries().to_vec();
+                let mut idx: std::collections::HashMap<&str, usize> =
+                    std::collections::HashMap::with_capacity(entries.len());
+                for (i, e) in entries.iter().enumerate() {
+                    idx.entry(e.as_str()).or_insert(i);
                 }
-            }
-            // fallback: plain_body full-text scan (non-dict sources or old plugin)
-            if hits.is_empty() {
-                let q_l = q.to_lowercase();
-                for di in 0..n {
-                    let title_l = entries[di].to_lowercase();
-                    if title_l.contains(&q_l) {
-                        hits.push(CorpusHit {
-                            doc_idx: di,
-                            entry_title: entries[di].clone(),
-                        });
-                        if hits.len() >= 500 { truncated = true; break; }
+                let mut out = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                for hw in &ft {
+                    if !seen.insert(hw.as_str()) {
                         continue;
                     }
-                    let plain = self.source.plain_body(di);
-                    if plain.to_lowercase().contains(&q_l) {
-                        hits.push(CorpusHit {
-                            doc_idx: di,
-                            entry_title: entries[di].clone(),
-                        });
-                        if hits.len() >= 500 { truncated = true; break; }
+                    if let Some(&di) = idx.get(hw.as_str()) {
+                        out.push(di);
+                        if out.len() >= 500 {
+                            truncated = true;
+                            break;
+                        }
                     }
                 }
+                // mark: plugin path — skip bulk plain_body in loop below
+                out
+            } else {
+                // fallback: host scan title + plain_body (md/url/…)
+                let mut out = Vec::new();
+                for di in 0..n {
+                    let title = self
+                        .source
+                        .entries()
+                        .get(di)
+                        .cloned()
+                        .unwrap_or_else(|| format!("#{di}"));
+                    if self.corpus_plain[di].is_none() {
+                        let plain = self.source.plain_body(di);
+                        let lower = plain.to_lowercase();
+                        self.corpus_plain[di] = Some((plain, lower));
+                    }
+                    let plain_l = self.corpus_plain[di]
+                        .as_ref()
+                        .map(|(_, l)| l.as_str())
+                        .unwrap_or("");
+                    let title_l = title.to_lowercase();
+                    if tokens.iter().all(|t| title_l.contains(t) || plain_l.contains(t)) {
+                        out.push(di);
+                        if out.len() >= 500 {
+                            truncated = true;
+                            break;
+                        }
+                    }
+                }
+                out
+            }
+        };
+        for di in candidates {
+            let title = self
+                .source
+                .entries()
+                .get(di)
+                .cloned()
+                .unwrap_or_else(|| format!("#{di}"));
+            hits.push(CorpusHit {
+                doc_idx: di,
+                entry_title: title,
+                lines: Vec::new(), // lazy: ensure_corpus_lines_for_selected
+            });
+            if hits.len() >= 500 {
+                truncated = true;
+                break;
             }
         }
         self.corpus_hits = hits;
@@ -216,21 +260,82 @@ impl App {
             self.nav.selected = self.nav.filtered.len().saturating_sub(1);
         }
         self.nav.scroll = 0;
+        self.ensure_corpus_lines_for_selected();
+        self.refresh_corpus_status();
+    }
+
+    fn refresh_corpus_status(&mut self) {
         let m = self.corpus_hits.len();
         self.status = if m == 0 {
             "corpus 0 · C-p/n hist".into()
-        } else if truncated {
+        } else if self.nav.truncated {
             format!(
-                "corpus {}/{}+ (truncated) · C-p/n hist · ↑↓ navigate",
+                "corpus {}/{}+ (truncated) · C-p/n hist · ↑↓ files · ←→ lines",
                 self.nav.selected + 1,
                 m
             )
         } else {
             format!(
-                "corpus {}/{m} · C-p/n hist · ↑↓ navigate",
+                "corpus {}/{m} · C-p/n hist · ↑↓ files · ←→ lines",
                 self.nav.selected + 1
             )
         };
+    }
+
+    /// Fill match lines for the currently selected corpus hit (one entry, cached).
+    fn ensure_corpus_lines_for_selected(&mut self) {
+        let tokens: Vec<String> = self
+            .nav
+            .query
+            .split_whitespace()
+            .map(|t| t.to_lowercase())
+            .filter(|t| !t.is_empty())
+            .collect();
+        if tokens.is_empty() {
+            return;
+        }
+        let Some(&fi) = self.nav.filtered.get(self.nav.selected) else {
+            return;
+        };
+        if fi >= self.corpus_hits.len() {
+            return;
+        }
+        if !self.corpus_hits[fi].lines.is_empty() {
+            return;
+        }
+        let di = self.corpus_hits[fi].doc_idx;
+        let title = self.corpus_hits[fi].entry_title.clone();
+        let n = self.source.entries().len();
+        if self.corpus_plain.len() != n {
+            self.corpus_plain.clear();
+            self.corpus_plain.resize(n, None);
+        }
+        if di >= n {
+            return;
+        }
+        if self.corpus_plain[di].is_none() {
+            let plain = self.source.plain_body(di);
+            let lower = plain.to_lowercase();
+            self.corpus_plain[di] = Some((plain, lower));
+        }
+        let plain = self.corpus_plain[di]
+            .as_ref()
+            .map(|(p, _)| p.as_str())
+            .unwrap_or("");
+        let mut lines = Vec::new();
+        for (li, line) in plain.lines().enumerate() {
+            let low = line.to_lowercase();
+            if tokens.iter().all(|t| low.contains(t)) {
+                lines.push((li, line.trim().chars().take(120).collect()));
+                if lines.len() >= 80 {
+                    break;
+                }
+            }
+        }
+        if lines.is_empty() {
+            lines.push((0, title.chars().take(120).collect()));
+        }
+        self.corpus_hits[fi].lines = lines;
     }
 
     pub(crate) fn close_nav(&mut self) {
@@ -239,9 +344,11 @@ impl App {
         self.nav.filtered.clear();
         self.nav.truncated = false;
         self.corpus_hits.clear();
+        // keep corpus_plain for next A-S-f in same session
         self.corpus_hist_idx = None;
         self.status = "nav closed".into();
     }
+
 
     fn refilter_consult(&mut self) {
         // ponytail: orderless AND of whitespace tokens; 500-cap, no fuzzy lib
@@ -348,6 +455,10 @@ impl App {
                     self.consult_history_step(-1);
                 } else {
                     self.nav.selected = self.nav.selected.saturating_sub(1);
+                    if mode == Overlay::Corpus {
+                        self.nav.scroll = 0;
+                        self.ensure_corpus_lines_for_selected();
+                    }
                 }
                 return true;
             }
@@ -357,6 +468,10 @@ impl App {
                 } else if !self.nav.filtered.is_empty() {
                     self.nav.selected =
                         (self.nav.selected + 1).min(self.nav.filtered.len() - 1);
+                    if mode == Overlay::Corpus {
+                        self.nav.scroll = 0;
+                        self.ensure_corpus_lines_for_selected();
+                    }
                 }
                 return true;
             }
@@ -368,7 +483,25 @@ impl App {
                 self.corpus_history_step(1);
                 return true;
             }
+            KeyCode::Left if mode == Overlay::Corpus => {
+                self.ensure_corpus_lines_for_selected();
+                self.nav.scroll = self.nav.scroll.saturating_sub(1);
+                return true;
+            }
+            KeyCode::Right if mode == Overlay::Corpus => {
+                self.ensure_corpus_lines_for_selected();
+                if let Some(&fi) = self.nav.filtered.get(self.nav.selected) {
+                    if let Some(hit) = self.corpus_hits.get(fi) {
+                        let max = hit.lines.len().saturating_sub(1);
+                        self.nav.scroll = (self.nav.scroll + 1).min(max);
+                    }
+                }
+                return true;
+            }
             KeyCode::Enter => {
+                if mode == Overlay::Corpus {
+                    self.ensure_corpus_lines_for_selected();
+                }
                 self.nav_activate(mode);
                 return true;
             }
@@ -439,6 +572,11 @@ impl App {
             }
             Overlay::Corpus => {
                 if let Some(hit) = self.corpus_hits.get(idx).cloned() {
+                    let line_hint = hit
+                        .lines
+                        .get(self.nav.scroll)
+                        .cloned()
+                        .or_else(|| hit.lines.first().cloned());
                     if let Some(pos) = self.filtered.iter().position(|&i| i == hit.doc_idx) {
                         self.list_sel = pos;
                     } else {
@@ -451,15 +589,48 @@ impl App {
                     let q = self.nav.query.clone();
                     self.push_corpus_history(&q);
                     self.load_selected();
-                    self.status = format!("opened: {}", hit.entry_title);
-                } else {
-                    self.status = "no entry selected".into();
+                    if !q.is_empty() {
+                        self.vim_query = q;
+                        let hits = self.match_hits();
+                        let which = line_hint
+                            .and_then(|(li, text)| {
+                                hits.iter()
+                                    .position(|h| h.line == li)
+                                    .or_else(|| {
+                                        let t = text.trim();
+                                        if t.is_empty() {
+                                            return None;
+                                        }
+                                        self.body
+                                            .iter()
+                                            .position(|l| {
+                                                let p = Self::line_plain(l);
+                                                p.contains(t)
+                                                    || (!p.is_empty() && t.contains(p.trim()))
+                                            })
+                                            .and_then(|bl| hits.iter().position(|h| h.line == bl))
+                                    })
+                            })
+                            .unwrap_or(0);
+                        if hits.is_empty() {
+                            self.status =
+                                format!("corpus → {} (no body match)", hit.entry_title);
+                        } else {
+                            self.jump_to_match(which);
+                        }
+                    } else if let Some((li, _)) = line_hint {
+                        self.set_caret(li, 0);
+                        self.status = format!("corpus → {}", hit.entry_title);
+                    } else {
+                        self.status = format!("corpus → {}", hit.entry_title);
+                    }
                 }
             }
         }
         self.nav.overlay = None;
         self.nav.query.clear();
         self.corpus_hits.clear();
+        // keep corpus_plain for next A-S-f
         self.corpus_hist_idx = None;
     }
 
@@ -923,6 +1094,7 @@ fn trunc(s: &str, n: usize) -> String {
 }
 
 fn draw_corpus(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
+    // left: matching files · right: lines in selected file · query highlight
     let h = area.height.saturating_sub(2).max(12);
     let w = area.width.saturating_sub(2).max(50);
     let popup = centered(w, h, area);
@@ -944,7 +1116,14 @@ fn draw_corpus(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     frame.render_widget(block, popup);
 
     let v = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(inner);
-    let q_style = Style::default().fg(if app.nav.query.trim().is_empty() {
+    let tokens: Vec<String> = app
+        .nav
+        .query
+        .split_whitespace()
+        .map(|t| t.to_lowercase())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let q_style = Style::default().fg(if tokens.is_empty() {
         theme.muted()
     } else {
         theme.search_text()
@@ -956,13 +1135,6 @@ fn draw_corpus(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let normal = Style::default().fg(theme.list_text());
     let muted = Style::default().fg(theme.muted());
 
-    let tokens: Vec<String> = app
-        .nav
-        .query
-        .split_whitespace()
-        .map(|t| t.to_lowercase())
-        .filter(|t| !t.is_empty())
-        .collect();
     let q_text = if app.nav.query.is_empty() {
         "type to search…".to_string()
     } else {
@@ -973,7 +1145,7 @@ fn draw_corpus(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     } else {
         token_highlight_spans(&q_text, &tokens, q_style, hit_style)
     };
-    q_spans.push(Span::styled(format!("  {n} entries"), muted));
+    q_spans.push(Span::styled(format!("  {n} files"), muted));
     frame.render_widget(Paragraph::new(Line::from(q_spans)), v[0]);
     if v[0].width > 0 {
         let col = app.nav.query.chars().count() as u16;
@@ -983,21 +1155,30 @@ fn draw_corpus(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         ));
     }
 
-    // single-column title list
-    let vis = v[1].height.saturating_sub(1).max(1) as usize;
-    let start = if app.nav.selected >= vis {
-        app.nav.selected + 1 - vis
+    let cols = Layout::horizontal([Constraint::Percentage(38), Constraint::Percentage(62)])
+        .split(v[1]);
+
+    // —— left: files ——
+    let fvis = cols[0].height.saturating_sub(1).max(1) as usize;
+    let fstart = if app.nav.selected >= fvis {
+        app.nav.selected + 1 - fvis
     } else {
         0
     };
-    let end = (start + vis).min(n);
-    let items: Vec<ListItem> = app.nav.filtered[start..end]
+    let fend = (fstart + fvis).min(n);
+    let file_items: Vec<ListItem> = app.nav.filtered[fstart..fend]
         .iter()
         .enumerate()
         .map(|(row, &idx)| {
-            let sel = start + row == app.nav.selected;
+            let sel = fstart + row == app.nav.selected;
             let hit = app.corpus_hits.get(idx);
-            let t = hit.map(|h| h.entry_title.as_str()).unwrap_or("?");
+            let title = hit.map(|h| h.entry_title.as_str()).unwrap_or("?");
+            let count = hit.map(|h| h.lines.len()).unwrap_or(0);
+            let label = if count == 0 {
+                trunc(title, 28)
+            } else {
+                format!("{}  {}", trunc(title, 24), count)
+            };
             let style = if sel {
                 Style::default()
                     .fg(theme.status_focus_fg())
@@ -1006,21 +1187,72 @@ fn draw_corpus(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
             } else {
                 normal
             };
-            let spans = if tokens.is_empty() {
-                vec![Span::styled(trunc(t, 60), style)]
-            } else {
-                token_highlight_spans(&trunc(t, 60), &tokens, style, hit_style)
-            };
-            ListItem::new(Line::from(spans))
+            ListItem::new(Line::from(Span::styled(label, style)))
         })
         .collect();
     frame.render_widget(
-        List::new(items).block(
+        List::new(file_items).block(
+            Block::default()
+                .borders(Borders::TOP | Borders::RIGHT)
+                .title(" files "),
+        ),
+        cols[0],
+    );
+
+    // —— right: lines in selected file ——
+    let line_sel = app.nav.scroll;
+    let cur = app
+        .nav
+        .filtered
+        .get(app.nav.selected)
+        .and_then(|&i| app.corpus_hits.get(i));
+    let match_lines: &[(usize, String)] = cur.map(|h| h.lines.as_slice()).unwrap_or(&[]);
+    let lvis = cols[1].height.saturating_sub(1).max(1) as usize;
+    let lstart = if line_sel >= lvis {
+        line_sel + 1 - lvis
+    } else {
+        0
+    };
+    let lend = (lstart + lvis).min(match_lines.len());
+    let line_items: Vec<ListItem> = match_lines[lstart..lend]
+        .iter()
+        .enumerate()
+        .map(|(row, (li, text))| {
+            let sel = lstart + row == line_sel;
+            let prefix = if sel {
+                format!("▶{:>4} │ ", li + 1)
+            } else {
+                format!(" {:>4} │ ", li + 1)
+            };
+            let base = if sel {
+                Style::default()
+                    .fg(theme.accent())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                normal
+            };
+            let mut spans = vec![Span::styled(prefix, base)];
+            let shown = trunc(text, 90);
+            if tokens.is_empty() {
+                spans.push(Span::styled(shown, base));
+            } else {
+                spans.extend(token_highlight_spans(&shown, &tokens, base, hit_style));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+    let lines_title = if match_lines.is_empty() {
+        " lines ".into()
+    } else {
+        format!(" lines {}/{} ", line_sel + 1, match_lines.len())
+    };
+    frame.render_widget(
+        List::new(line_items).block(
             Block::default()
                 .borders(Borders::TOP)
-                .title(" entries "),
+                .title(lines_title),
         ),
-        v[1],
+        cols[1],
     );
 }
 

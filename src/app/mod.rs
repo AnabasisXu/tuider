@@ -91,12 +91,14 @@ pub struct App {
     pub(crate) consult_history: Vec<String>,
     /// While browsing history with ↑↓; None = live edit.
     pub(crate) consult_hist_idx: Option<usize>,
-    /// Alt+Shift+f corpus hits (entry titles).
+    /// Alt+Shift+f corpus hits (entry title + lines).
     pub(crate) corpus_hits: Vec<nav::CorpusHit>,
     /// Corpus query history (oldest → newest).
     pub(crate) corpus_history: Vec<String>,
     /// While browsing corpus history with C-p/n; None = live edit.
     pub(crate) corpus_hist_idx: Option<usize>,
+    /// Lazy plain_body + lowercase for corpus refilter (cleared on close).
+    pub(crate) corpus_plain: Vec<Option<(String, String)>>,
     /// Body cell caret paint; off until user moves (dict/mdx default).
     pub(crate) body_caret_shown: bool,
     /// `zz` avy-goto-char style jump.
@@ -149,6 +151,7 @@ impl App {
             corpus_hits: Vec::new(),
             corpus_history: Vec::new(),
             corpus_hist_idx: None,
+            corpus_plain: Vec::new(),
             body_caret_shown: false,
             avy: None,
         };

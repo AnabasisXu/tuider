@@ -341,13 +341,19 @@ impl crate::plugin::ContentSource for HostSource {
         true
     }
     fn plain_body(&mut self, index: usize) -> String {
-        match self.inner.load_text(index, 100) {
-            Ok(text) => {
-                let (body, _) = split_status_trailer(&text);
-                strip_body_to_plain(body)
-            }
-            Err(e) => e,
-        }
+        // Same line structure as load() so corpus line hits match body jumps.
+        // (old strip_body_to_plain collapsed HTML → one long line → only 1 hit)
+        let r = self.load(index, 100);
+        r.lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -357,32 +363,6 @@ fn render_plugin_body(text: &str, width: usize) -> Vec<ratatui::text::Line<'stat
     render_plugin_body_doc(text, width).0
 }
 
-fn strip_body_to_plain(text: &str) -> String {
-    if let Some(rest) = text.strip_prefix(BODY_HTML_V1_PREFIX) {
-        let html = rest.split_once("\n\u{1e}\n").map(|(_, h)| h).unwrap_or(rest);
-        return html_to_rough_plain(html);
-    }
-    text.to_string()
-}
-
-fn html_to_rough_plain(html: &str) -> String {
-    // ponytail: tag strip only; good enough for CLI/AI/clipboard
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for ch in html.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => out.push(ch),
-            _ => {}
-        }
-    }
-    out.replace("&nbsp;", " ")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-}
 
 
 pub fn render_plugin_body_doc(
@@ -698,6 +678,36 @@ mod body_render_tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert!(t0.contains("1)"), "jump target: {t0}");
+    }
+
+    #[test]
+    fn html_plain_lines_keep_multiple_token_hits() {
+        // corpus refilter counts matching *lines*; must not collapse HTML to one blob
+        let body = "TUIDER_HTML_V1\n\n\u{1e}\n\
+            <div>1) first make sense here</div>\
+            <div>2) second make appears too</div>\
+            <div>3) third make line</div>";
+        let (lines, _, _) = super::render_plugin_body_doc(body, 80);
+        let plain: String = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let hits: Vec<_> = plain
+            .lines()
+            .enumerate()
+            .filter(|(_, ln)| ln.to_lowercase().contains("make"))
+            .collect();
+        assert!(
+            hits.len() >= 3,
+            "expected ≥3 make lines, got {} in {plain:?}",
+            hits.len()
+        );
     }
 
     #[test]

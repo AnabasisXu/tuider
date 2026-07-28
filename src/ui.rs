@@ -403,7 +403,7 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
             Line::from(vec![key("    v V s zz "), desc("visual / line-visual / line-jump / avy")]),
             Line::from(vec![key("    f / o    "), desc("links / outline; click link copies URL")]),
             Line::from(vec![key("    Alt+f    "), desc("consult multi-word filter jump")]),
-            Line::from(vec![key("    A-S-f    "), desc("corpus search entries")]),
+            Line::from(vec![key("    A-S-f    "), desc("corpus search all entries")]),
             Line::from(vec![key("    O        "), desc("open directory (sidebar off)")]),
             Line::from(vec![key("    ?        "), desc("help")]),
             Line::from(""),
