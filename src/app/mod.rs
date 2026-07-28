@@ -97,7 +97,7 @@ pub struct App {
     pub(crate) corpus_history: Vec<String>,
     /// While browsing corpus history with C-p/n; None = live edit.
     pub(crate) corpus_hist_idx: Option<usize>,
-    /// Lazy plain_body + lowercase for corpus refilter (cleared on close).
+    /// Lazy plain_body + lowercase for corpus; kept across overlay closes in-session.
     pub(crate) corpus_plain: Vec<Option<(String, String)>>,
     /// Body cell caret paint; off until user moves (dict/mdx default).
     pub(crate) body_caret_shown: bool,
