@@ -1,0 +1,20 @@
+name: test
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo test
+        run: cargo test --workspace
+      - name: smoke core
+        run: bash scripts/smoke-core.sh
+      - name: smoke epub
+        run: bash scripts/smoke-epub.sh

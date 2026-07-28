@@ -1,0 +1,33 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux-slim:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: package slim
+        run: bash scripts/package-slim.sh dist
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tuider-linux-slim
+          path: dist/*.tar.gz
+      - name: GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
+          generate_release_notes: true
+          body: |
+            Linux **slim** tarball: `tuider` + `libtuider_{url,hn,epub}.so`.
+            **No** `libtuider_dict.so` (AGPL / self-build only).
+            See `INSTALL.txt` inside the archive and `CHANGELOG.md`.

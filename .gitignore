@@ -39,3 +39,10 @@ tuider.yml
 # Session scratch / chat exports (local only)
 .scratch/
 tuider-chat-*.md
+
+# Local package output
+/dist/
+
+# Agent/session scratch
+.until-done/
+docs/todos.md
