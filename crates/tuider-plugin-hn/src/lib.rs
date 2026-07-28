@@ -238,12 +238,12 @@ pub unsafe extern "C" fn tuider_source_action(
     };
     if story.url.is_none() {
         // still reload so host shows the note in status trailer
-        story.last_action_note = Some("a: 无外链（Ask HN / 纯讨论帖）".into());
+        story.last_action_note = Some("a: no external URL (Ask HN / discussion-only)".into());
         return 1;
     }
     if story.include_article && story.body.is_some() {
         story.last_action_note = Some(format!(
-            "a: 已含全文 · {}",
+            "a: article already included · {}",
             story.url.as_deref().unwrap_or("?")
         ));
         return 1;
@@ -251,7 +251,7 @@ pub unsafe extern "C" fn tuider_source_action(
     story.include_article = true;
     story.body = None; // recompose; disk page cache → fast
     story.last_action_note = Some(format!(
-        "a: 抓取全文… · {}",
+        "a: fetching article… · {}",
         story.url.as_deref().unwrap_or("?")
     ));
     1
@@ -641,9 +641,9 @@ fn format_article_block(article_md: &str) -> String {
 /// Host status bar hint when article not yet fetched.
 pub(crate) fn article_status_hint(story: &Story) -> Option<String> {
     if story.url.is_some() && !story.include_article {
-        Some(format!("a 抓取全文 · {}", story.url.as_deref().unwrap_or("")))
+        Some(format!("a fetch article · {}", story.url.as_deref().unwrap_or("")))
     } else if story.url.is_none() {
-        Some("无外链（讨论帖）".into())
+        Some("no external URL (discussion)".into())
     } else {
         None
     }
@@ -790,31 +790,69 @@ fn http_get(url: &str) -> Result<String, String> {
         .user_agent(
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         )
-        .redirect(reqwest::redirect::Policy::limited(5))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            match validate_fetch_url(attempt.url().as_str()) {
+                Ok(_) if attempt.previous().len() >= 5 => attempt.error("too many redirects"),
+                Ok(_) => attempt.follow(),
+                Err(e) => attempt.error(e),
+            }
+        }))
         .build()
         .map_err(|e| e.to_string())?;
-    client
+    let resp = client
         .get(parsed.as_str())
         .header("accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
         .header("accept-language", "en-US,en;q=0.8")
         .send()
         .map_err(|e| e.to_string())?
         .error_for_status()
-        .map_err(|e| e.to_string())?
-        .text()
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    validate_fetch_url(resp.url().as_str())?;
+    resp.text().map_err(|e| e.to_string())
 }
+
 
 fn validate_fetch_url(url: &str) -> Result<Url, String> {
     let parsed = Url::parse(url).map_err(|e| e.to_string())?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
         return Err("only http/https".into());
     }
-    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
-    if host == "localhost" || host.ends_with(".local") {
-        return Err("blocked local host".into());
+    match parsed.host() {
+        None => return Err("blocked local host".into()),
+        Some(url::Host::Domain(d)) => {
+            let host = d.to_ascii_lowercase();
+            if host.is_empty() || host == "localhost" || host.ends_with(".local") {
+                return Err("blocked local host".into());
+            }
+        }
+        Some(url::Host::Ipv4(v4)) if is_blocked_v4(v4) => {
+            return Err("blocked local/private host".into());
+        }
+        Some(url::Host::Ipv6(v6)) if is_blocked_v6(v6) => {
+            return Err("blocked local/private host".into());
+        }
+        Some(url::Host::Ipv4(_)) | Some(url::Host::Ipv6(_)) => {}
     }
     Ok(parsed)
+}
+
+// ponytail: host-string SSRF guard; no DNS resolve
+fn is_blocked_v4(v4: std::net::Ipv4Addr) -> bool {
+    v4.is_loopback()
+        || v4.is_private()
+        || v4.is_link_local()
+        || v4.is_unspecified()
+        || v4.is_broadcast()
+        || v4.octets()[0] == 0
+        || (v4.octets()[0] == 100 && (64..=127).contains(&v4.octets()[1])) // CGNAT
+}
+
+fn is_blocked_v6(v6: std::net::Ipv6Addr) -> bool {
+    v6.is_loopback()
+        || v6.is_unspecified()
+        || v6.is_unique_local()
+        || v6.is_unicast_link_local()
+        || v6.to_ipv4_mapped().is_some_and(is_blocked_v4)
 }
 
 /// readability extract → structured markdown (h2/h3 kept when present).
@@ -1140,7 +1178,7 @@ mod tests {
         assert!(!md.contains("article fetch failed"));
         assert!(!md.contains("# Comments"));
         let hint = article_status_hint(&story).unwrap();
-        assert!(hint.contains("a 抓取全文"), "{hint}");
+        assert!(hint.contains("a fetch article"), "{hint}");
         assert!(hint.contains("example.invalid"), "{hint}");
     }
 
@@ -1201,8 +1239,37 @@ mod tests {
     #[test]
     fn validate_blocks_localhost() {
         assert!(validate_fetch_url("http://localhost/x").is_err());
-        assert!(validate_fetch_url("https://example.com/x").is_ok());
+        assert!(validate_fetch_url("http://127.0.0.1/x").is_err());
+        assert!(validate_fetch_url("http://192.168.1.1/x").is_err());
+        assert!(validate_fetch_url("http://10.0.0.1/x").is_err());
+        assert!(validate_fetch_url("http://172.16.0.1/x").is_err());
+        assert!(validate_fetch_url("http://169.254.1.1/x").is_err());
+        assert!(validate_fetch_url("http://0.0.0.0/x").is_err());
+        assert!(validate_fetch_url("http://[::1]/x").is_err());
+        assert!(validate_fetch_url("http://[fd00::1]/x").is_err());
+        assert!(validate_fetch_url("http://[fe80::1]/x").is_err());
+        assert!(validate_fetch_url("http://[::ffff:192.168.1.1]/x").is_err());
     }
+
+    #[test]
+    fn validate_blocks_local_domains() {
+        assert!(validate_fetch_url("http://myhost.local/x").is_err());
+        assert!(validate_fetch_url("http://foo.bar.local/x").is_err());
+    }
+
+    #[test]
+    fn validate_blocks_non_http_schemes() {
+        assert!(validate_fetch_url("file:///etc/passwd").is_err());
+        assert!(validate_fetch_url("gopher://example.com/x").is_err());
+        assert!(validate_fetch_url("ftp://example.com/x").is_err());
+    }
+
+    #[test]
+    fn validate_allows_public() {
+        assert!(validate_fetch_url("https://example.com/x").is_ok());
+        assert!(validate_fetch_url("http://8.8.8.8/x").is_ok());
+    }
+
 
     #[test]
     fn disk_cache_roundtrip_and_ttl() {
