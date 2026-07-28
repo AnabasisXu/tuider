@@ -1,11 +1,13 @@
+> 用户可见功能总表：[FEATURES.md](FEATURES.md)。加载权威：[STATUS.md](STATUS.md)。
+
 # Tuider 插件机制（方案 A：动态 `.so`）
 
 ## 你要的分离，现在怎么落地
 
 | 要求 | 实现 |
 |------|------|
-| 本体尽量小 | 主包 **不再静态链接** url/hn/dict；**code 在 core**（syntect） |
-| 拷贝插件文件才能用 | 只有 `plugins_dir` 里存在对应 `.so` 才能 `-u`/`-hn`/dict… |
+| 本体尽量小 | 主包 **不再静态链接** url/hn/dict/epub；**code 在 core**（syntect） |
+| 拷贝插件文件才能用 | 只有 `plugins_dir` 里存在对应 `.so` 才能裸 URL/`-hn`/dict/epub… |
 | 独立包 | `crates/tuider-plugin-*` 编成 **cdylib** |
 | 发行知识单源 | host `src/plugin_catalog.rs`：claims / 缺 so 提示 / `pkg` |
 
@@ -13,6 +15,8 @@
 ~/.local/share/tuider/plugins/     # 默认目录（可用 TUIDER_PLUGINS_DIR 或 yml plugins_dir）
   libtuider_url.so
   libtuider_hn.so
+  libtuider_dict.so
+  libtuider_epub.so
   ...
 ```
 
@@ -26,7 +30,16 @@
 - `pkg list|install|remove`：同一 `CATALOG`（id / crate / so / summary）
 - **无**第二份 id→flag `match`
 
-claims 语义：url（`-u`/`--url`/裸 http(s)）、hn（`-hn`/`--hn`）、dict（`-g`/`--group`/`.mdx`）。code 已并入 core，不再 claims 插件。
+claims 语义：
+
+| id | 认领 |
+|----|------|
+| url | 裸 `http(s)://`（**无** `-u` / `--url`） |
+| hn | `-hn` / `--hn` |
+| dict | `-g` / `--group` / `.mdx`（`-s`  alone 不认领） |
+| epub | `-e` / `--epub` / `.epub` |
+
+code 已并入 core，不再 claims 插件。缺 so 提示优先级：url → hn → dict → epub。
 
 ## 构建与安装
 
@@ -51,16 +64,18 @@ mkdir -p ~/.local/share/tuider/plugins
 cp target/release/libtuider_url.so ~/.local/share/tuider/plugins/
 ```
 
-其它插件同样：`tuider-plugin-hn` → `libtuider_hn.so`（crate 名见各 `Cargo.toml` `[lib] name`）。
+其它插件同样：`tuider-plugin-hn` → `libtuider_hn.so` 等（crate 名见各 `Cargo.toml` `[lib] name`）。  
+一键：`./scripts/install-plugins.sh`（含 epub）。冒烟：`./scripts/smoke-epub.sh`。
 
 ## 运行
 
 ```fish
-# 无插件目录 → 拒绝 -u
-TUIDER_PLUGINS_DIR=/tmp/empty tuider -u https://example.com
+# 无插件目录 → 拒绝裸 URL
+TUIDER_PLUGINS_DIR=/tmp/empty tuider https://example.com
 
 # 有 .so → 可用
-tuider -u https://example.com
+tuider https://example.com
+tuider book.epub
 ```
 
 配置（可选）：
@@ -116,9 +131,10 @@ API 侧适配后文本源 trait 名：`PluginTextSource`。App 侧已渲染源�
 - [x] `tuider-plugin-hn` → `libtuider_hn.so`
 - [x] code 高亮并入 core（`src/code.rs` + syntect；无 so）
 - [x] `tuider-plugin-dict` → `libtuider_dict.so`
+- [x] `tuider-plugin-epub` → `libtuider_epub.so`
 - [x] `BODY_HTML_V1_PREFIX` + host 渲染
 - [x] 帮助列出已加载插件与 plugins 目录
-- [x] `scripts/install-plugins.sh`
+- [x] `scripts/install-plugins.sh` / `scripts/smoke-epub.sh`
 
 ## URL / HN 缓存与错误（用户可知路径）
 
@@ -130,6 +146,7 @@ API 侧适配后文本源 trait 名：`PluginTextSource`。App 侧已渲染源�
 |--|--|
 | 根目录 | `$XDG_CACHE_HOME/tuider`，否则 `~/.cache/tuider` |
 | URL 页 | `pages/<fnv1a64(url)>.md`（markdown 正文） |
+| URL feed 原始 | `pages/<fnv1a64(url)>.feed` |
 | HN top | `hn/topstories.json` |
 | HN item | `hn/item/<id>.json` |
 | HN body | `hn/body/v2/<id>.md`（+ `.comments` 计数戳） |
@@ -158,18 +175,20 @@ API 侧适配后文本源 trait 名：`PluginTextSource`。App 侧已渲染源�
 
 默认 cache-only 路径用 `cache_get_any`：**过期也读**。URL 插件：命中即用（**无 TTL**）。
 
-### HTTP / gzip
+### HTTP / gzip / SSRF
 
 HN 与 URL 的 reqwest 启用 **`gzip`** feature。部分站点（如强制 `Content-Encoding: gzip`）无此 feature 会把压缩体当 UTF-8 → 全文 `�` 乱码并污染 `pages/` 缓存；修完后删对应 `pages/<hash>.md` 再 `a`。
 
+URL/HN 抓取前拦 **localhost / `.local` / private·link-local·loopback IPv4/IPv6**（host 字符串判断，不解析 DNS）。错误文案含 `blocked local host` / `blocked local/private host`。
+
 ### 错误文案 / 重试
 
-- **URL open 失败**：`tuider_plugin_open` 经 `write_err` 返回可读字符串（网络/HTTP status/`only http(https)`/`blocked local host`）；host 打印后 exit。**无自动重试**（ponytail）。
+- **URL open 失败**：`tuider_plugin_open` 经 `write_err` 返回可读字符串（`timeout`/`connect`/`request`/`http NNN`/`network`、`only http(https)`/`blocked local host`）；host 打印后 exit。**无自动重试**（ponytail）。
 - **HN open（`--sync`）**：top/item 拉取最多 **3** 次（list **2**）指数退避；失败文案 `HN open failed after retries: …`。
 - **HN open（默认 cache-only）**：无 `hn/topstories.json` 或条目不足 → `… — run tuider -hn --sync once to populate cache`。
 - **HN 外链 article**（键 `a`）：失败写入正文 `_article fetch failed: …_`，不崩 TUI。
 
-### HN 与 mdx-tui 有意差异（HN-01..03）
+### HN 与 mdx-tui 有意差异（HN-01..04）
 
 | ID | 行为 |
 |----|------|
@@ -177,3 +196,10 @@ HN 与 URL 的 reqwest 启用 **`gzip`** feature。部分站点（如强制 `Con
 | **HN-02** | 评论 BFS **cap 20**（`MAX_COMMENTS`）；更深树以后再开。 |
 | **HN-03** | mdx-tui：Enter/Shift+Enter 分评论与原文；Tuider：**Enter 默认评论+meta**，键 **`a`**（action `article`）再抓外链全文。保留差异。 |
 | **HN-04** | Tuider 默认 **cache-only**；`--sync` 才联网刷新。mdx-tui 若每次 open 都拉网，属有意差异。 |
+
+## EPUB（epub 插件）
+
+- claims：`-e` / `--epub` / 路径以 `.epub` 结尾
+- open：按 spine 拆章节；`entry_at` = 章节标题；`load_body` = 章节 markdown
+- 实体：数值 HTML 实体解码；`img` → `![alt](src)` 占位（不嵌图）
+- 测试：`crates/tuider-plugin-epub/tests/fixtures/*`；host `loader`/`App` 可选 so 测；`scripts/smoke-epub.sh`

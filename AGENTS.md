@@ -9,6 +9,8 @@
 - **禁止**让用户自己 `cargo run` / `cargo build` 才能看到改动。
 - 用户侧只需：`tdd README.md`（或其它参数）。
 
+- **仅 Linux 本仓库路径。** Windows 用户跑 `tuider.exe`，**不要**用 Cygwin PATH 里的 `tdd`（常撞到 Pandoc）。
+
 ## 其它
 
 - shell 是 fish；命令用 fish 语法。

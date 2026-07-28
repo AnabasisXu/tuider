@@ -1,7 +1,7 @@
 # Tuider — 对话规划总览
 
-> 日期：2026-07-22（文档更新：host-boundary / 动态 cdylib）  
-> 来源：mdx-tui 定位讨论 + core/插件边界重划 + 独立 crate 落地 + 动态 so 演化。  
+> 日期：2026-07-24（文档更新：epub 插件 + 动态 cdylib）  
+> 来源：mdx-tui 定位讨论 + core/插件边界重划 + 独立 crate 落地 + 动态 so 演化 + epub。  
 > 状态：**可测交付**；**加载权威见 [STATUS.md](STATUS.md)**；**下一步见 [NEXT.md](NEXT.md)**。
 
 ---
@@ -35,10 +35,10 @@
 | D4 | **mdx-tui 不再作为长期独立应用形态** | 用户意图：词典能力将来是插件血统，而不是继续以「全能 mdx-tui」演进；**本阶段仍不删不改其代码** |
 | D5 | **默认内容：md + txt** | 裸命令扫 cwd 一层 `*.md` / `*.txt` |
 | D6 | **插件机制** | **动态 cdylib**（`crates/tuider-plugin-*` → `.so`）+ host `dlopen` + `plugin_catalog`；yml `enabled` 为额外门禁。历史「Cargo feature 链入」已作废 |
-| D7 | **插件集** | `url` · `hn` · `dict` · `code`（**不含 AI**） |
+| D7 | **插件集** | `url` · `hn` · `dict` · `epub`（**code 在 core**；**不含 AI**） |
 | D8 | **架构方案 A** | 单 bin + 动态 so + `ContentSource`（host）/ `PluginTextSource`（api） |
 | D9 | **兼容名** | 主命令 `tuider` |
-| D10 | **交付** | core reader + AI + 四插件 crate 可测 |
+| D10 | **交付** | core reader + AI + 插件 crate 可测（url/hn/dict/epub） |
 | D11 | **AI 属产品 core** | 编译上仍为 `feature = "ai"`，且 **`default = ["ai"]`**；无 key 仍可阅读 |
 | D12 | **default 不含 url** | `url` 仅插件 so；日常 `cargo build` = 阅读器 + AI |
 
@@ -64,12 +64,12 @@
 
 | 插件 id | 入口 | 依赖倾向（在插件 crate 内） |
 |---------|------|---------------------------|
-| `url` | `-u` / 裸 URL | HTTP + readability；缓存自管 |
+| `url` | `-u` / 裸 URL | HTTP + readability；缓存自管；拦 private IP |
 | `hn` | `-hn`（默认 cache）、`--sync` 刷新 | HTTP 仅 `--sync`/`a`；缓存自管 |
 | `dict` | `.mdx`、群组、CLI 查词 | mdict、HTML/CSS 信封 |
-| `code` | `--code` / 源码扩展 | plain → syntect → 可选 tree-sitter |
+| `epub` | `-e` / `.epub` | zip/spine → 章节 markdown |
 
-Host 空 Cargo feature 名 `url`/`hn`/… 仅为兼容壳，**不**链入代码。发行知识见 `plugin_catalog`。
+**code**（源码扩展）已并入 core（`src/code.rs` + syntect），不再是插件 so。Host 空 Cargo feature 名 `url`/`hn`/… 仅为兼容壳，**不**链入代码。发行知识见 `plugin_catalog`。
 
 ### 3.3 非目标（第一期 / 二期边界）
 
@@ -85,12 +85,11 @@ Host 空 Cargo feature 名 `url`/`hn`/… 仅为兼容壳，**不**链入代码�
 
 ```
 tuider (bin, src/)
-├── core: app ui md scan config ai theme
+├── core: app ui md scan config ai theme code
 ├── loader + plugin_catalog   (dlopen .so；claims/missing/pkg 单源)
 ├── plugin-api  (crates/tuider-plugin-api)  ABI v1 + PluginTextSource + BODY_HTML_V1_PREFIX
 └── plugin crates → cdylib
-    libtuider_url.so | hn | code | dict
-```
+    libtuider_url.so | hn | dict | epub
 
 **深度模块原则**（Ousterhout）：
 
@@ -154,13 +153,16 @@ tuider (bin, src/)
 - dict 大词库索引；code syntect 增强  
 - 详见 **[NEXT.md](NEXT.md)**
 
+
 ### 已修（曾记为问题）
 
 - vim 关键词 span 高亮（非整行）  
 - visual 扩展不再强制置顶  
-- visual 字符级 `v` + 行级 `V`  
+- visual 字符级 `v` + 行级 `V`（caret）  
+- `s` line-jump、`zz` avy、`/` 历史  
 - app 键位 `InputMode` 路由  
 - host 死 `cache` 删除；`plugin_catalog` 单源  
+- **epub** 动态插件 + smoke  
 
 ### 仍在
 

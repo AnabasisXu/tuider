@@ -1,26 +1,27 @@
 # Tuider 现状（权威快照）
 
 目录：`~/cleantest/tuider`  
-日期：2026-07-23（code 并入 core）
+日期：2026-07-24（epub 插件 + nav：`s` line-jump / `zz` avy）
 
 ## 加载机制
 
-1. 主二进制**不链接** url/hn/dict 业务代码；**code 高亮在 core**（`src/code.rs` + syntect）。
+1. 主二进制**不链接** url/hn/dict/epub 业务代码；**code 高亮在 core**（`src/code.rs` + syntect）。
 2. 启动扫描 `plugins_dir`（默认 `~/.local/share/tuider/plugins`）。
 3. 目录内 `.so` 经 **`dlopen`**（`src/loader.rs`）加载；无文件则无对应 CLI。
 4. **`src/plugin_catalog.rs`** 是发行侧插件**单一知识源**：id / so 名 / summary / `claims` / `missing_plugin_hint`；`pkg` 与 `main` 只消费它。
-5. 认领顺序：`handles_args` **或** catalog `claims(id)`；缺 so 时 catalog 按 url→hn→dict 给 `need plugin …` 提示。
+5. 认领顺序：`handles_args` **或** catalog `claims(id)`；缺 so 时 catalog 按 url→hn→dict→epub 给 `need plugin …` 提示。
 6. yml `plugins.*.enabled: false` 可再挡一层；**不能代替「无文件」**。
 7. **无 host `cache` 模块**（已删）；网络/磁盘缓存由各插件自管。**HN 默认 cache-only**，`--sync` 才联网。
 
 已验证：
 
-- 空目录 + `-u` / `.mdx` → `need plugin … — copy .so`
+- 空目录 + 裸 `https://…` / `.mdx` / `.epub` → `need plugin … — copy .so`
 - 无 so：`cargo run -- -l src/main.rs` → 列出 `main.rs`（core code）
 - `libtuider_dict.so` + `-l some.mdx` → 词条列表
-- `libtuider_url.so` + `-l -u https://example.com` → Example Domain
+- `libtuider_url.so` + `-l https://example.com` → Example Domain
+- `libtuider_epub.so` + fixture `.epub` → 章节列表 / body（见 `scripts/smoke-epub.sh`、loader/App 测）
 - help 列出 `LOADED PLUGINS`
-- `cargo test -q`：catalog / InputMode / loader body 绿
+- `cargo test -q`：catalog / InputMode / loader body / epub（有 so 时）绿
 
 ## Body / ABI
 
@@ -28,10 +29,13 @@
 - Body 可选信封：`BODY_HTML_V1_PREFIX`（`"TUIDER_HTML_V1\n"`）+ `css` + `"\n\u{1e}\n"` + `html`；host 做 CSS 子集 → Lines。
 - API 侧文本源 trait：`PluginTextSource`；host App 侧仍为 `ContentSource`（已渲染 Lines）。
 - Core code 文件同样产出 `TUIDER_HTML_V1` 再经 `loader::render_plugin_body_doc`。
+- epub：章节 HTML → markdown（含数值实体、`img` → `![alt](src)` 占位）。
 
 ## App 输入
 
-- `InputMode`（Help / Ai / Nav / VimSearch / Visual / Normal）仅收敛 `handle_key` 路由可读性；**不改** ui getter / 布局。
+- `InputMode`（Help / Ai / Nav / VimSearch / Visual / Normal）仅收敛 `handle_key` 路由；**不改** ui getter / 布局。
+- 正文（侧栏关）：`v`/`V` 在 caret 进字符/行 visual；`s` 视口 line-jump 多键标签；`zz` avy 连续子串标签跳转。
+- `/` 与 Alt+f consult：↑↓ 查询历史。
 
 ## 包结构
 
@@ -42,6 +46,7 @@ crates/
   tuider-plugin-url/     → libtuider_url.so
   tuider-plugin-hn/      → libtuider_hn.so
   tuider-plugin-dict/    → libtuider_dict.so
+  tuider-plugin-epub/    → libtuider_epub.so
 ```
 
 ## 安装插件
@@ -58,12 +63,13 @@ crates/
 - AI：多 provider 时 429/5xx 自动轮换下一个（Tab 仍手动切换）
 - dict：mdx-tui HTML+CSS 渲染（无 CSS 时用 mdx-tui 内建青/绿/黄 cascade）
 - HTML 边角（2026-07-23）：`<img alt>` → `[alt]`；`<table>` 行分隔 + ` | ` 单元格；见 `html_render` 单测
-- HN/URL：缓存路径与 TTL、HN `-l` 标题行（非 mdx-tui 表）、评论 cap 40、`a`=全文 — `docs/plugins.md`
+- HN/URL：缓存路径与 TTL、HN `-l` 标题行、评论 BFS **cap 20**、`a`=全文、**拦 private/local IP** — `docs/plugins.md`
 - md/txt 仍走 mdterm 风格 `md::render`
 - `tuider pkg list|install|remove`：本地 cargo 构建/拷贝/删除 .so（catalog 同源）
 - dict 依赖 `mdx-tui-mdict`（AGPL）— 发行注意
 - host 空 Cargo feature 名 `url`/`hn`/… 仅为兼容壳，**不**再链入插件依赖
+- CI：Windows release workflow（含 mdx-tui-mdict checkout）
 
 ## 权威顺序
 
-加载与插件边界以**本文件**为准；历史规划见 [PLAN.md](PLAN.md)；下一步见 [NEXT.md](NEXT.md)。
+加载与插件边界以**本文件**为准；功能清单见 [FEATURES.md](FEATURES.md)；历史规划见 [PLAN.md](PLAN.md)；下一步见 [NEXT.md](NEXT.md)。
