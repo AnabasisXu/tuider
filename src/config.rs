@@ -106,6 +106,24 @@ pub struct AiProvider {
     pub model: String,
 }
 
+/// Validate and normalize an AI base URL.
+/// Trims whitespace and trailing slashes; requires http:// or https:// scheme.
+/// Returns None for invalid schemes (file://, data:, etc.) or empty strings.
+#[allow(dead_code)]
+pub fn validate_ai_base_url(s: &str) -> Option<String> {
+    let trimmed = s.trim();
+    let without_trailing_slashes = trimmed.trim_end_matches('/');
+    let normalized = without_trailing_slashes;
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized.starts_with("http://") || normalized.starts_with("https://") {
+        Some(normalized.to_string())
+    } else {
+        None
+    }
+}
+
 /// Search order: `./tuider.yml`, `./.tuider.yml`, parents, then `~/.config/tuider.yml`.
 pub fn config_search_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
@@ -120,8 +138,8 @@ pub fn config_search_paths() -> Vec<PathBuf> {
             }
         }
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        paths.push(PathBuf::from(home).join(".config/tuider.yml"));
+    if let Some(home) = home_dir() {
+        paths.push(home.join(".config/tuider.yml"));
     }
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         paths.push(PathBuf::from(xdg).join("tuider.yml"));
@@ -203,14 +221,56 @@ pub fn load_wordlist(name: &str) -> Option<std::collections::HashSet<String>> {
     }
 }
 
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
 fn dirs_config() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         PathBuf::from(xdg)
-    } else if let Some(home) = std::env::var_os("HOME") {
-        PathBuf::from(home).join(".config")
+    } else if let Some(home) = home_dir() {
+        home.join(".config")
     } else {
         PathBuf::from(".config")
     }
+}
+
+/// Default user config path (~/.config/tuider.yml or XDG).
+pub fn user_config_path() -> PathBuf {
+    dirs_config().join("tuider.yml")
+}
+
+/// Path that would be / is loaded; for help display.
+pub fn config_display_path() -> PathBuf {
+    load()
+        .map(|(p, _)| p)
+        .unwrap_or_else(user_config_path)
+}
+
+/// If no config file exists on search path, write minimal template to user path.
+/// Call only when entering TUI. Returns path used for display.
+pub fn ensure_user_config() -> PathBuf {
+    if let Some((p, _)) = load() {
+        return p;
+    }
+    let path = user_config_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    const TEMPLATE: &str = "\
+# tuider.yml — auto-created; see `tuider -h` / docs/FEATURES.md
+# plugins_dir: ~/.local/share/tuider/plugins
+# plugins:
+#   url: { enabled: true }
+# ai:
+#   providers: []
+";
+    if !path.is_file() {
+        let _ = fs::write(&path, TEMPLATE);
+    }
+    path
 }
 
 fn load_legacy_mdx_tui_wordlists() -> Option<HashMap<String, String>> {
@@ -252,10 +312,11 @@ fn env_provider() -> Option<AiProvider> {
     let base_url = std::env::var("TUIDER_AI_BASE_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1".into());
     let model = std::env::var("TUIDER_AI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
+    let base_url = validate_ai_base_url(&base_url)?;
     Some(AiProvider {
         name: "env".into(),
         api_key,
-        base_url: base_url.trim_end_matches('/').to_string(),
+        base_url,
         model,
     })
 }
@@ -273,16 +334,22 @@ fn ai_section_to_providers(ai: &AiSection) -> Vec<AiProvider> {
     if let Some(list) = &ai.providers {
         return list
             .iter()
-            .map(|e| AiProvider {
-                name: e.name.clone(),
-                api_key: e
+            .filter_map(|e| {
+                let base_url = validate_ai_base_url(&e.base_url)?;
+                let api_key = e
                     .api_key
                     .clone()
-                    .unwrap_or_else(|| default_key.clone()),
-                base_url: e.base_url.trim_end_matches('/').to_string(),
-                model: e.model.clone(),
+                    .unwrap_or_else(|| default_key.clone());
+                if api_key.is_empty() {
+                    return None;
+                }
+                Some(AiProvider {
+                    name: e.name.clone(),
+                    api_key,
+                    base_url,
+                    model: e.model.clone(),
+                })
             })
-            .filter(|p| !p.api_key.is_empty())
             .collect();
     }
 
@@ -298,12 +365,16 @@ fn ai_section_to_providers(ai: &AiSection) -> Vec<AiProvider> {
         .base_url
         .clone()
         .unwrap_or_else(|| "https://api.openai.com/v1".into());
+    let base_url = match validate_ai_base_url(&base_url) {
+        Some(url) => url,
+        None => return Vec::new(),
+    };
     let model = ai.model.clone().unwrap_or_else(|| "gpt-4o-mini".into());
     let name = ai.provider.clone().unwrap_or_else(|| "default".into());
     vec![AiProvider {
         name,
         api_key,
-        base_url: base_url.trim_end_matches('/').to_string(),
+        base_url,
         model,
     }]
 }
@@ -330,5 +401,41 @@ plugins:
         assert_eq!(p.len(), 1);
         assert_eq!(p[0].name, "a");
         assert_eq!(cfg.plugins.unwrap().hn.unwrap().default_limit, Some(10));
+    }
+
+    #[test]
+    fn validate_ai_base_url_accepts_http_rejects_file() {
+        assert_eq!(
+            validate_ai_base_url("https://api.openai.com/v1/"),
+            Some("https://api.openai.com/v1".into())
+        );
+        assert_eq!(
+            validate_ai_base_url("http://localhost:8080/v1"),
+            Some("http://localhost:8080/v1".into())
+        );
+        assert_eq!(validate_ai_base_url("file:///tmp"), None);
+        assert_eq!(validate_ai_base_url("ftp://evil.com"), None);
+        assert_eq!(validate_ai_base_url("  "), None);
+        assert_eq!(validate_ai_base_url("api.openai.com/v1"), None);
+    }
+
+    #[test]
+    fn invalid_base_url_filtered_from_providers() {
+        let y = r#"
+ai:
+  providers:
+    - name: good
+      base_url: https://api.openai.com/v1
+      model: gpt-4
+      api_key: k1
+    - name: bad
+      base_url: file:///tmp/malicious
+      model: gpt-4
+      api_key: k2
+"#;
+        let cfg: FileConfig = serde_yaml::from_str(y).unwrap();
+        let p = ai_section_to_providers(cfg.ai.as_ref().unwrap());
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].name, "good");
     }
 }

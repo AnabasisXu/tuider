@@ -90,12 +90,11 @@ fn run(registry: &PluginRegistry, plugins_dir: &std::path::Path) -> Result<(), E
             "--html" => cli_html = true,
             "--db" | "--sync" | "--code" => {}
             // plugin flags (+ their values): leave for plugin open
-            "-u" | "--url" | "-hn" | "--hn" | "-g" | "--group" | "-s" | "--search" | "-n"
-            | "--limit" | "-m" | "-w" => {
+            "-hn" | "--hn" | "-g" | "--group" | "-s" | "--search" | "-n"
+            | "--limit" | "-m" | "-w" | "-e" | "--epub" => {
                 if matches!(
                     a.as_str(),
-                    "-u" | "--url"
-                        | "-g"
+                    "-g"
                         | "--group"
                         | "-s"
                         | "--search"
@@ -103,6 +102,8 @@ fn run(registry: &PluginRegistry, plugins_dir: &std::path::Path) -> Result<(), E
                         | "--limit"
                         | "-m"
                         | "-w"
+                        | "-e"
+                        | "--epub"
                 ) && i + 1 < raw.len()
                     && !raw[i + 1].starts_with('-')
                 {
@@ -231,8 +232,7 @@ fn extract_cli_words(raw: &[String]) -> Vec<String> {
     let mut i = 0;
     while i < raw.len() {
         match raw[i].as_str() {
-            "-g" | "--group" | "-s" | "--search" | "-n" | "--limit" | "-w" | "-u" | "--url"
-            | "-m" => {
+            "-g" | "--group" | "-s" | "--search" | "-n" | "--limit" | "-w" | "-m" => {
                 i += 1;
                 if i < raw.len() && !raw[i].starts_with('-') {
                     i += 1;
@@ -351,6 +351,7 @@ fn open_files(paths: Vec<PathBuf>, recursive: bool, list_mode: bool) -> Result<(
 }
 
 fn run_tui(source: Box<dyn ContentSource>) -> Result<(), ExitCode> {
+    let _cfg_path = crate::config::ensure_user_config();
     let mut terminal = ratatui::init();
     let result = app::App::new(source).run(&mut terminal);
     ratatui::restore();
@@ -429,6 +430,9 @@ PLUGINS DIR:
     {}
     env TUIDER_PLUGINS_DIR overrides
 
+CONFIG:
+    {}
+
 LOADED PLUGINS:
 {plug}
 PKG:
@@ -436,6 +440,7 @@ PKG:
     tuider pkg install <id|all>
     tuider pkg remove  <id|all>
 See docs/plugins.md",
-        plugins_dir.display()
+        plugins_dir.display(),
+        config::config_display_path().display()
     );
 }
