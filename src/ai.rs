@@ -22,6 +22,8 @@ use unicode_width::UnicodeWidthChar;
 use crate::theme::Theme;
 
 const PREVIEW_CHARS: usize = 4000;
+const SELECTION_CONTEXT_CHARS: usize = PREVIEW_CHARS; // 4000
+
 const MAX_MESSAGES: usize = 80;
 const MAX_TOOL_ROUNDS: usize = 12;
 const CONTENT_CHUNK_BYTES: usize = 12000;
@@ -44,14 +46,15 @@ impl AiConfig {
         if api_key.trim().is_empty() {
             return None;
         }
-        let base_url = std::env::var("TUIDER_AI_BASE_URL")
+        let base_url_raw = std::env::var("TUIDER_AI_BASE_URL")
             .unwrap_or_else(|_| "https://api.openai.com/v1".into());
         let model =
             std::env::var("TUIDER_AI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
+        let base_url = crate::config::validate_ai_base_url(&base_url_raw)?;
         Some(Self {
             name: "env".into(),
             api_key,
-            base_url: base_url.trim_end_matches('/').to_string(),
+            base_url,
             model,
         })
     }
@@ -91,7 +94,7 @@ pub struct AiSession {
     providers: Vec<AiConfig>,
     active: usize,
     messages: Vec<Bubble>,
-    input: String,
+    pub(crate) input: String,
     /// Byte index into `input` for caret (always at char boundary).
     cursor: usize,
     scroll: u16,
@@ -103,6 +106,8 @@ pub struct AiSession {
     doc_body: String,
     /// Full pane text for tools (get_current_content).
     full_body: String,
+    /// Visual `a` inject; empty = no block.
+    pub(crate) selection_context: String,
 }
 
 
@@ -150,6 +155,7 @@ impl AiSession {
             doc_title: String::new(),
             doc_body: String::new(),
             full_body: String::new(),
+            selection_context: String::new(),
         }
     }
 
@@ -161,6 +167,10 @@ impl AiSession {
         self.doc_title = title.to_string();
         self.full_body = plain_body.to_string();
         self.doc_body = plain_body.chars().take(PREVIEW_CHARS).collect();
+    }
+
+    pub fn set_selection_context(&mut self, text: &str) {
+        self.selection_context = text.chars().take(SELECTION_CONTEXT_CHARS).collect();
     }
 
     pub fn toggle(&mut self) {
@@ -207,7 +217,7 @@ impl AiSession {
     fn status_line(&self) -> String {
         if let Some(c) = self.active_cfg() {
             format!(
-                "AI [{}] {} · C-j send · A-t 翻译 · /exp /switch · Tab · Esc",
+                "AI [{}] {} · Enter send · C-j ↵ · A-t translate · /exp /switch · Tab · Esc",
                 c.name, c.model
             )
         } else {
@@ -345,13 +355,11 @@ impl AiSession {
                 self.active = (self.active + 1) % self.providers.len();
                 self.status = self.status_line();
             }
-            // send: Ctrl+J only (terminals rarely deliver Ctrl+Enter as Enter+CONTROL)
-            KeyCode::Char('j') if ctrl => self.send(),
+            // send: Enter; newline: Ctrl+J (terminals rarely deliver Ctrl+Enter)
+            KeyCode::Char('j') if ctrl => self.insert_at_cursor('\n'),
+            KeyCode::Enter => self.send(),
             // Alt+t: full-document translate (replaces old bare "1" shortcut)
             KeyCode::Char('t') | KeyCode::Char('T') if alt => self.send_translate_full(),
-            KeyCode::Enter => {
-                self.insert_at_cursor('\n');
-            }
             KeyCode::Backspace => {
                 self.backspace_at_cursor();
             }
@@ -431,7 +439,7 @@ impl AiSession {
     }
 
     const TRANSLATE_FULL: &'static str =
-        "请将当前文档全文翻译成中文，保留段落结构，专有名词可保留原文。若预览截断请先 get_current_content。";
+        "Please translate the current document into Chinese, keep paragraph structure; proper nouns may stay in original. If preview is truncated, call get_current_content first.";
 
     /// Alt+t: queue full-doc translate and send immediately.
     fn send_translate_full(&mut self) {
@@ -550,20 +558,23 @@ impl AiSession {
         let full_len = self.full_body.len();
         let truncated = full_len > SYSTEM_CONTEXT_PREVIEW_BYTES;
         let mut system = format!(
-            "你是词典与阅读助手，用中文简洁回答。有工具：查词/搜词头/反查/列词典/读正文/导出/联网搜索。\n\
-             规则：\n\
-             1. 查词义用 query_word，模糊用 search_headwords，反查 reverse_lookup。\n\
-             2. 全文翻译/摘要若预览截断，先 get_current_content（可 offset 分段）。\n\
-             3. 导出内容用 export_content；整段对话导出提示用户 /exp。\n\
-             4. 最多 {MAX_TOOL_ROUNDS} 轮工具。\n\
-             当前文档：{title}（正文约 {full_len} 字节"
+            "You are a dictionary/reading assistant. Answer concisely in Chinese. Tools: lookup/search headwords/reverse/list dicts/read body/export/web search.\n\
+             Rules:\n\
+             1. Senses: query_word; fuzzy: search_headwords; reverse: reverse_lookup.\n\
+             2. Full-doc translate/summarize if preview truncated: get_current_content (offset chunks).\n\
+             3. Export via export_content; full chat export: tell user /exp.\n\
+             4. At most {MAX_TOOL_ROUNDS} tool rounds.\n\
+             Current doc: {title} (~{full_len} body bytes"
         );
         if truncated {
-            system.push_str("，预览已截断");
+            system.push_str(", preview truncated");
         }
-        system.push_str("）\n--- preview ---\n");
+        system.push_str(")\n--- preview ---\n");
         system.push_str(if preview.is_empty() { "(empty)" } else { &preview });
         system.push_str("\n--- end ---");
+        if !self.selection_context.is_empty() {
+            append_selection_block(&mut system, &self.selection_context);
+        }
 
         let providers = self.providers.clone();
         thread::spawn(move || {
@@ -618,7 +629,7 @@ impl AiSession {
         let title = if self.loading {
             format!(" AI [{pname}] streaming… Esc cancel ")
         } else if self.configured {
-            format!(" AI [{pname}] C-j send · A-t 翻译 · Enter ↵ · Tab · Esc ")
+            format!(" AI [{pname}] Enter send · C-j ↵ · A-t translate · Tab · Esc ")
         } else {
             " AI (no API key) ".into()
         };
@@ -687,7 +698,7 @@ impl AiSession {
         );
 
         let ib = Block::default()
-            .title(" input · C-j send · A-t 翻译全文 ")
+            .title(" input · Enter send · C-j ↵ · A-t translate full doc ")
 
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border()));
@@ -713,6 +724,16 @@ impl AiSession {
         }
     }
 
+}
+
+fn append_selection_block(system: &mut String, selection: &str) {
+    let sel: String = selection.chars().take(SELECTION_CONTEXT_CHARS).collect();
+    if sel.is_empty() {
+        return;
+    }
+    system.push_str("\n--- user selection ---\n");
+    system.push_str(&sel);
+    system.push_str("\n--- end selection ---");
 }
 
 
@@ -1330,6 +1351,7 @@ mod tests {
             doc_title: String::new(),
             doc_body: String::new(),
             full_body: String::new(),
+            selection_context: String::new(),
         }
     }
 
@@ -1364,13 +1386,24 @@ mod tests {
 
 
     #[test]
-    fn ctrl_j_triggers_send_path() {
+    fn enter_triggers_send_path() {
+        let mut s = empty_session();
+        s.input = "hi".into();
+        s.cursor = 2;
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        s.handle_key(key);
+        assert!(s.status.contains("no provider"));
+    }
+
+    #[test]
+    fn ctrl_j_inserts_newline() {
         let mut s = empty_session();
         s.input = "hi".into();
         s.cursor = 2;
         let key = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL);
         s.handle_key(key);
-        assert!(s.status.contains("no provider"));
+        assert_eq!(s.input, "hi\n");
+        assert_eq!(s.cursor, 3);
     }
 
     #[test]
@@ -1379,7 +1412,7 @@ mod tests {
         let key = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT);
         s.handle_key(key);
         // no provider → status error; input was set then cleared by send path after slash? no provider leaves messages?
-        assert!(s.status.contains("no provider") || s.input.contains("翻译") || !s.messages.is_empty());
+        assert!(s.status.contains("no provider") || s.input.contains("translate") || !s.messages.is_empty());
     }
 
     #[test]
@@ -1418,6 +1451,30 @@ mod tests {
         s.cursor = s.input.len();
         s.send();
         assert!(s.status.starts_with("exported "));
+    }
+
+    #[test]
+    fn append_selection_block_formats() {
+        let mut s = String::from("base");
+        append_selection_block(&mut s, "hello");
+        assert!(s.contains("--- user selection ---"));
+        assert!(s.contains("hello"));
+        assert!(s.contains("--- end selection ---"));
+    }
+
+    #[test]
+    fn set_selection_context_overwrites() {
+        let mut sess = empty_session();
+        sess.set_selection_context("one");
+        sess.set_selection_context("two");
+        assert_eq!(sess.selection_context, "two");
+    }
+
+    #[test]
+    fn append_selection_block_skips_empty() {
+        let mut s = String::from("base");
+        append_selection_block(&mut s, "");
+        assert_eq!(s, "base");
     }
 
 }
