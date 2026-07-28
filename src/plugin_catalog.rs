@@ -12,9 +12,9 @@ pub struct CatalogEntry {
 }
 
 fn claims_url(args: &[String]) -> bool {
-    args.iter().any(|a| {
-        a == "-u" || a == "--url" || a.starts_with("http://") || a.starts_with("https://")
-    })
+    // ponytail: drop -u/--url; bare http(s) only
+    args.iter()
+        .any(|a| a.starts_with("http://") || a.starts_with("https://"))
 }
 
 fn claims_hn(args: &[String]) -> bool {
@@ -27,7 +27,16 @@ fn claims_dict(args: &[String]) -> bool {
     // -s alone does not claim; needs -g or .mdx
 }
 
-/// Static catalog (order = missing-hint priority: url → hn → dict).
+fn claims_epub(args: &[String]) -> bool {
+    args.iter().any(|a| {
+        a == "-e"
+            || a == "--epub"
+            || a.ends_with(".epub")
+            || a.ends_with(".EPUB")
+    })
+}
+
+/// Static catalog (order = missing-hint priority: url → hn → dict → epub).
 /// Code reading is built into core (not a plugin).
 pub const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
@@ -50,6 +59,13 @@ pub const CATALOG: &[CatalogEntry] = &[
         so_name: "libtuider_dict.so",
         summary: "MDX dictionary",
         claims: claims_dict,
+    },
+    CatalogEntry {
+        id: "epub",
+        crate_name: "tuider-plugin-epub",
+        so_name: "libtuider_epub.so",
+        summary: "EPUB book → chapters",
+        claims: claims_epub,
     },
 ];
 
@@ -84,9 +100,12 @@ mod tests {
     }
 
     #[test]
-    fn claims_url_flags_and_urls() {
+    fn claims_url_bare_https_only() {
+        assert!(!claims("url", &s(&["-u"])));
+        assert!(!claims("url", &s(&["--url"])));
+        assert!(!claims("url", &s(&["--url", "not-a-url"])));
+        // -u is ignored; bare URL still claims
         assert!(claims("url", &s(&["-u", "https://x"])));
-        assert!(claims("url", &s(&["--url", "http://x"])));
         assert!(claims("url", &s(&["https://example.com"])));
         assert!(claims("url", &s(&["http://example.com"])));
         assert!(!claims("url", &s(&["README.md"])));
@@ -107,24 +126,36 @@ mod tests {
     }
 
     #[test]
+    fn claims_epub_paths() {
+        assert!(claims("epub", &s(&["book.epub"])));
+        assert!(claims("epub", &s(&["-e", "x"])));
+        assert!(claims("epub", &s(&["--epub", "x"])));
+        assert!(claims("epub", &s(&["BOOK.EPUB"])));
+        assert!(!claims("epub", &s(&["README.md"])));
+        assert_eq!(missing_plugin_hint(&s(&["novel.epub"]), |_: &str| false), Some("epub"));
+    }
+
+    #[test]
     fn missing_hint_order_and_loaded() {
         let none = |_: &str| false;
         assert_eq!(
-            missing_plugin_hint(&s(&["-u", "https://x"]), none),
+            missing_plugin_hint(&s(&["https://x"]), none),
             Some("url")
         );
+        // -u alone no longer claims url
+        assert_eq!(missing_plugin_hint(&s(&["-u"]), none), None);
         assert_eq!(missing_plugin_hint(&s(&["-hn"]), none), Some("hn"));
         // code is core — no missing-plugin hint
         assert_eq!(missing_plugin_hint(&s(&["--code"]), none), None);
         assert_eq!(missing_plugin_hint(&s(&["src/ai.rs"]), none), None);
-        // url claims first when both present
+        // bare url still first when both present
         assert_eq!(
-            missing_plugin_hint(&s(&["-hn", "-u"]), none),
+            missing_plugin_hint(&s(&["-hn", "https://x"]), none),
             Some("url")
         );
         let has_url = |id: &str| id == "url";
         assert_eq!(
-            missing_plugin_hint(&s(&["-u", "https://x"]), has_url),
+            missing_plugin_hint(&s(&["https://x"]), has_url),
             None
         );
         assert_eq!(missing_plugin_hint(&s(&["README.md"]), none), None);

@@ -1,0 +1,15 @@
+[package]
+name = "tuider-plugin-epub"
+version = "0.1.0"
+edition = "2024"
+description = "Tuider EPUB plugin (.so)"
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+name = "tuider_epub"
+
+[dependencies]
+tuider-plugin-api = { path = "../tuider-plugin-api" }
+# read-only; no write feature
+rbook = { version = "0.7", default-features = false, features = ["threadsafe", "prelude"] }

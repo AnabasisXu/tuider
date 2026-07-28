@@ -5,6 +5,7 @@ members = [
     "crates/tuider-plugin-url",
     "crates/tuider-plugin-hn",
     "crates/tuider-plugin-dict",
+    "crates/tuider-plugin-epub",
 ]
 resolver = "2"
 
@@ -43,3 +44,8 @@ base64 = "0.22"
 libloading = "0.8"
 syntect = "5"
 tuider-plugin-api = { path = "crates/tuider-plugin-api" }
+
+[profile.release]
+# ponytail: thin LTO + strip for slim release tarballs
+lto = "thin"
+strip = "symbols"

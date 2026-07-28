@@ -19,19 +19,30 @@ esac
 PACKAGES=(
   tuider-plugin-url
   tuider-plugin-hn
-  tuider-plugin-dict
+  tuider-plugin-epub
 )
+# dict pulls AGPL mdx-tui-mdict — opt-in only
+if [[ "${INCLUDE_DICT:-0}" == "1" || "${2:-}" == "with-dict" ]]; then
+  PACKAGES+=(tuider-plugin-dict)
+fi
 
 echo "building plugins ($PROFILE)…"
+cargo_args=()
+for p in "${PACKAGES[@]}"; do
+  cargo_args+=(-p "$p")
+done
 if [[ "$PROFILE" == "release" ]]; then
-  cargo build --release -p tuider-plugin-url -p tuider-plugin-hn -p tuider-plugin-dict
+  cargo build --release "${cargo_args[@]}"
 else
-  cargo build -p tuider-plugin-url -p tuider-plugin-hn -p tuider-plugin-dict
+  cargo build "${cargo_args[@]}"
 fi
 
 mkdir -p "$DEST"
 TARGET_DIR="target/$PROFILE"
-for so in libtuider_url.so libtuider_hn.so libtuider_dict.so; do
+for pkg in "${PACKAGES[@]}"; do
+  # tuider-plugin-url -> libtuider_url.so
+  short="${pkg#tuider-plugin-}"
+  so="libtuider_${short}.so"
   src="$TARGET_DIR/$so"
   if [[ -f "$src" ]]; then
     cp -f "$src" "$DEST/"

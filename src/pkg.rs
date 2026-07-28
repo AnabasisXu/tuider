@@ -140,7 +140,10 @@ fn install(who: &str, plugins_dir: &Path) -> Result<(), ExitCode> {
 
     let root = workspace_root();
     if !root.join("Cargo.toml").is_file() {
-        eprintln!("tuider pkg: workspace root missing Cargo.toml: {}", root.display());
+        eprintln!("tuider pkg install: requires tuider source tree (Cargo workspace not found)");
+        eprintln!("  → build from source: cd <tuider-dir> && tuider pkg install {who}");
+        eprintln!("  → or copy the .so/.dll manually to the plugins directory");
+        eprintln!("  → plugins dir: {}/", plugins_dir.display());
         return Err(ExitCode::from(1));
     }
     std::fs::create_dir_all(plugins_dir).map_err(|e| {
