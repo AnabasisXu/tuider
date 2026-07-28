@@ -23,6 +23,8 @@ pub enum Overlay {
     Links,
     Toc,
     Consult,
+    /// Alt+Shift+f: search across all source entries (files / feed items).
+    Corpus,
 }
 
 #[derive(Debug, Default)]
@@ -31,11 +33,28 @@ pub struct NavState {
     pub selected: usize,
     pub scroll: usize,
     pub query: String,
-    /// Filtered indices into links/headings/consult hits.
+    /// Filtered indices into links/headings/consult hits/corpus hits.
     pub filtered: Vec<usize>,
-    /// consult hit cap (500) reached.
+    /// consult/corpus hit cap (500) reached.
     pub truncated: bool,
 }
+
+#[derive(Debug, Clone)]
+pub struct CorpusHit {
+    pub doc_idx: usize,
+    pub entry_title: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct LinkHist {
+    pub doc_idx: usize,
+    pub list_sel: usize,
+    pub filter: String,
+    pub scroll: u16,
+    pub caret_line: usize,
+    pub caret_col: usize,
+}
+
 
 
 impl App {
@@ -56,7 +75,7 @@ impl App {
             filtered: (0..self.links.len()).collect(),
             truncated: false,
         };
-        self.status = "links — type 过滤 · ↑↓ Enter · Esc".into();
+        self.status = "links — type to filter · ↑↓ Enter · Esc".into();
     }
 
     pub(crate) fn open_toc(&mut self) {
@@ -69,7 +88,7 @@ impl App {
             }
         }
         if self.headings.is_empty() {
-            self.status = "no outline / 义项 in document".into();
+            self.status = "no outline / senses in document".into();
             return;
         }
         let cur = self.scroll as usize;
@@ -90,7 +109,7 @@ impl App {
         if let Some(pos) = self.nav.filtered.iter().position(|&i| i == sel) {
             self.nav.selected = pos;
         }
-        self.status = "o 大纲/义项 — 打字过滤 · ↑↓ Enter 跳转 · Esc".into();
+        self.status = "o outline/senses — type to filter · ↑↓ Enter jump · Esc".into();
     }
 
 
@@ -107,7 +126,111 @@ impl App {
             filtered: Vec::new(),
             truncated: false,
         };
+        self.consult_hist_idx = None;
         self.refilter_consult();
+    }
+
+    pub(crate) fn open_corpus(&mut self) {
+        let n = self.source.entries().len();
+        if n == 0 {
+            self.status = "no entries to search".into();
+            return;
+        }
+        self.corpus_hits.clear();
+        self.nav = NavState {
+            overlay: Some(Overlay::Corpus),
+            selected: 0,
+            scroll: 0,
+            query: String::new(),
+            filtered: Vec::new(),
+            truncated: false,
+        };
+        self.corpus_hist_idx = None;
+        self.refilter_corpus();
+        self.status =
+            format!("corpus {n} entries — type · C-p/n hist · ↑↓ navigate");
+    }
+
+    fn refilter_corpus(&mut self) {
+        let q = self.nav.query.trim().to_owned();
+        let mut hits = Vec::new();
+        let mut truncated = false;
+        let entries: Vec<String> = self.source.entries().to_vec();
+        let n = entries.len();
+
+        if q.is_empty() {
+            for di in 0..n {
+                hits.push(CorpusHit {
+                    doc_idx: di,
+                    entry_title: entries[di].clone(),
+                });
+                if hits.len() >= 500 {
+                    truncated = true;
+                    break;
+                }
+            }
+        } else {
+            // try plugin fulltext first (dict: headword then def scan; no index)
+            let ft_hits = self.source.fulltext_search(&q, 500);
+            if !ft_hits.is_empty() {
+                let mut seen = std::collections::HashSet::new();
+                for hw in &ft_hits {
+                    if !seen.insert(hw.clone()) { continue; }
+                    if let Some(di) = entries.iter().position(|e| e == hw) {
+                        hits.push(CorpusHit {
+                            doc_idx: di,
+                            entry_title: hw.clone(),
+                        });
+                    }
+                    if hits.len() >= 500 { truncated = true; break; }
+                }
+            }
+            // fallback: plain_body full-text scan (non-dict sources or old plugin)
+            if hits.is_empty() {
+                let q_l = q.to_lowercase();
+                for di in 0..n {
+                    let title_l = entries[di].to_lowercase();
+                    if title_l.contains(&q_l) {
+                        hits.push(CorpusHit {
+                            doc_idx: di,
+                            entry_title: entries[di].clone(),
+                        });
+                        if hits.len() >= 500 { truncated = true; break; }
+                        continue;
+                    }
+                    let plain = self.source.plain_body(di);
+                    if plain.to_lowercase().contains(&q_l) {
+                        hits.push(CorpusHit {
+                            doc_idx: di,
+                            entry_title: entries[di].clone(),
+                        });
+                        if hits.len() >= 500 { truncated = true; break; }
+                    }
+                }
+            }
+        }
+        self.corpus_hits = hits;
+        self.nav.filtered = (0..self.corpus_hits.len()).collect();
+        self.nav.truncated = truncated;
+        if self.nav.selected >= self.nav.filtered.len() {
+            self.nav.selected = self.nav.filtered.len().saturating_sub(1);
+        }
+        self.nav.scroll = 0;
+        let m = self.corpus_hits.len();
+        self.status = if m == 0 {
+            "corpus 0 · C-p/n hist".into()
+        } else if truncated {
+            format!(
+                "corpus {}/{}+ (truncated) · C-p/n hist · ↑↓ navigate",
+                self.nav.selected + 1,
+                m
+            )
+        } else {
+            format!(
+                "corpus {}/{m} · C-p/n hist · ↑↓ navigate",
+                self.nav.selected + 1
+            )
+        };
     }
 
     pub(crate) fn close_nav(&mut self) {
@@ -115,6 +238,8 @@ impl App {
         self.nav.query.clear();
         self.nav.filtered.clear();
         self.nav.truncated = false;
+        self.corpus_hits.clear();
+        self.corpus_hist_idx = None;
         self.status = "nav closed".into();
     }
 
@@ -195,6 +320,10 @@ impl App {
                 self.refilter_consult();
                 return;
             }
+            Overlay::Corpus => {
+                self.refilter_corpus();
+                return;
+            }
         }
         if self.nav.selected >= self.nav.filtered.len() {
             self.nav.selected = self.nav.filtered.len().saturating_sub(1);
@@ -206,27 +335,37 @@ impl App {
         let Some(mode) = self.nav.overlay else {
             return false;
         };
-        let list_filter = matches!(mode, Overlay::Toc | Overlay::Links | Overlay::Consult);
+        let list_filter =
+            matches!(mode, Overlay::Toc | Overlay::Links | Overlay::Consult | Overlay::Corpus);
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => {
                 self.close_nav();
                 return true;
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.nav.selected = self.nav.selected.saturating_sub(1);
+            KeyCode::Up => {
                 if mode == Overlay::Consult {
-                    self.refresh_consult_status();
+                    self.consult_history_step(-1);
+                } else {
+                    self.nav.selected = self.nav.selected.saturating_sub(1);
                 }
                 return true;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if !self.nav.filtered.is_empty() {
+            KeyCode::Down => {
+                if mode == Overlay::Consult {
+                    self.consult_history_step(1);
+                } else if !self.nav.filtered.is_empty() {
                     self.nav.selected =
                         (self.nav.selected + 1).min(self.nav.filtered.len() - 1);
                 }
-                if mode == Overlay::Consult {
-                    self.refresh_consult_status();
-                }
+                return true;
+            }
+            KeyCode::Char('p') | KeyCode::Char('P') if ctrl && mode == Overlay::Corpus => {
+                self.corpus_history_step(-1);
+                return true;
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') if ctrl && mode == Overlay::Corpus => {
+                self.corpus_history_step(1);
                 return true;
             }
             KeyCode::Enter => {
@@ -235,6 +374,12 @@ impl App {
             }
             KeyCode::Backspace if list_filter => {
                 self.nav.query.pop();
+                if mode == Overlay::Consult {
+                    self.consult_hist_idx = None;
+                }
+                if mode == Overlay::Corpus {
+                    self.corpus_hist_idx = None;
+                }
                 self.refilter_nav_list();
                 return true;
             }
@@ -245,6 +390,12 @@ impl App {
             {
                 if !c.is_control() {
                     self.nav.query.push(c);
+                    if mode == Overlay::Consult {
+                        self.consult_hist_idx = None;
+                    }
+                    if mode == Overlay::Corpus {
+                        self.corpus_hist_idx = None;
+                    }
                     self.refilter_nav_list();
                 }
                 return true;
@@ -274,6 +425,7 @@ impl App {
             Overlay::Consult => {
                 // keep tokens so body highlight shows real matched substrings
                 let q = self.nav.query.clone();
+                self.push_consult_history(&q);
                 self.set_caret(idx, 0);
                 self.vim_query = q;
                 self.vim_match_idx = 0;
@@ -285,21 +437,256 @@ impl App {
                 }
                 self.status = format!("jumped to line {}", idx + 1);
             }
+            Overlay::Corpus => {
+                if let Some(hit) = self.corpus_hits.get(idx).cloned() {
+                    if let Some(pos) = self.filtered.iter().position(|&i| i == hit.doc_idx) {
+                        self.list_sel = pos;
+                    } else {
+                        self.filter.clear();
+                        self.refilter();
+                        if let Some(pos) = self.filtered.iter().position(|&i| i == hit.doc_idx) {
+                            self.list_sel = pos;
+                        }
+                    }
+                    let q = self.nav.query.clone();
+                    self.push_corpus_history(&q);
+                    self.load_selected();
+                    self.status = format!("opened: {}", hit.entry_title);
+                } else {
+                    self.status = "no entry selected".into();
+                }
+            }
         }
         self.nav.overlay = None;
         self.nav.query.clear();
+        self.corpus_hits.clear();
+        self.corpus_hist_idx = None;
+    }
+
+    fn push_consult_history(&mut self, q: &str) {
+        let q = q.trim();
+        if q.is_empty() {
+            return;
+        }
+        self.consult_history.retain(|h| h != q);
+        self.consult_history.push(q.to_string());
+        // ponytail: small cap
+        if self.consult_history.len() > 50 {
+            self.consult_history.remove(0);
+        }
+        self.consult_hist_idx = None;
+    }
+
+    /// dir -1 = older (↑), +1 = newer (↓). Vim-style cmdline history.
+    fn consult_history_step(&mut self, dir: isize) {
+        if self.consult_history.is_empty() {
+            return;
+        }
+        let n = self.consult_history.len();
+        let next = match self.consult_hist_idx {
+            None if dir < 0 => Some(n - 1),
+            None => return,
+            Some(i) => {
+                let j = i as isize + dir;
+                if j < 0 {
+                    Some(0)
+                } else if j >= n as isize {
+                    self.consult_hist_idx = None;
+                    self.nav.query.clear();
+                    self.refilter_consult();
+                    return;
+                } else {
+                    Some(j as usize)
+                }
+            }
+        };
+        if let Some(i) = next {
+            self.consult_hist_idx = Some(i);
+            self.nav.query = self.consult_history[i].clone();
+            self.refilter_consult();
+        }
+    }
+
+    fn push_corpus_history(&mut self, q: &str) {
+        let q = q.trim();
+        if q.is_empty() {
+            return;
+        }
+        self.corpus_history.retain(|h| h != q);
+        self.corpus_history.push(q.to_string());
+        // ponytail: same cap as consult
+        if self.corpus_history.len() > 50 {
+            self.corpus_history.remove(0);
+        }
+        self.corpus_hist_idx = None;
+    }
+
+    /// dir -1 = older (↑), +1 = newer (↓).
+    fn corpus_history_step(&mut self, dir: isize) {
+        if self.corpus_history.is_empty() {
+            return;
+        }
+        let n = self.corpus_history.len();
+        let next = match self.corpus_hist_idx {
+            None if dir < 0 => Some(n - 1),
+            None => return,
+            Some(i) => {
+                let j = i as isize + dir;
+                if j < 0 {
+                    Some(0)
+                } else if j >= n as isize {
+                    self.corpus_hist_idx = None;
+                    self.nav.query.clear();
+                    self.refilter_corpus();
+                    return;
+                } else {
+                    Some(j as usize)
+                }
+            }
+        };
+        if let Some(i) = next {
+            self.corpus_hist_idx = Some(i);
+            self.nav.query = self.corpus_history[i].clone();
+            self.nav.selected = 0;
+            self.refilter_corpus();
+        }
+    }
+
+
+
+    /// Left-click body: open link under cursor (blue/underline spans).
+    pub(crate) fn handle_mouse(&mut self, m: crossterm::event::MouseEvent) {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        if !matches!(
+            m.kind,
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+        ) {
+            // scroll wheel over body
+            if let Some(area) = self.content_area {
+                if m.column >= area.x
+                    && m.column < area.x.saturating_add(area.width)
+                    && m.row >= area.y
+                    && m.row < area.y.saturating_add(area.height)
+                {
+                    match m.kind {
+                        MouseEventKind::ScrollDown => {
+                            self.scroll = self.scroll.saturating_add(3);
+                        }
+                        MouseEventKind::ScrollUp => {
+                            self.scroll = self.scroll.saturating_sub(3);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            return;
+        }
+        // only act on Down to avoid double-open
+        if !matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return;
+        }
+        if self.nav_open() || self.show_help || self.vim_mode {
+            return;
+        }
+        #[cfg(feature = "ai")]
+        if self.ai.is_open() {
+            return;
+        }
+        let Some(area) = self.content_area else {
+            return;
+        };
+        // content block has TOP border → body starts at y+1
+        if m.column < area.x || m.row <= area.y {
+            return;
+        }
+        if m.column >= area.x.saturating_add(area.width)
+            || m.row >= area.y.saturating_add(area.height)
+        {
+            return;
+        }
+        let row = (m.row - area.y - 1) as usize;
+        let col = (m.column - area.x) as usize;
+        let line = self.scroll as usize + row;
+        if let Some(link) = self.link_at(line, col) {
+            self.dispatch_link(&link);
+        }
+    }
+
+    fn link_at(&self, line: usize, col: usize) -> Option<LinkEntry> {
+        use ratatui::style::Modifier;
+        use unicode_width::UnicodeWidthChar;
+        let body_line = self.body.get(line)?;
+        // find underlined run covering col (display width)
+        let mut x = 0usize;
+        let mut run_start = None;
+        let mut run_text = String::new();
+        let mut hit = false;
+        for sp in &body_line.spans {
+            let is_link = sp.style.add_modifier.contains(Modifier::UNDERLINED);
+            if !is_link {
+                if hit {
+                    break;
+                }
+                run_start = None;
+                run_text.clear();
+                for ch in sp.content.chars() {
+                    x += ch.width().unwrap_or(0);
+                }
+                continue;
+            }
+            if run_start.is_none() {
+                run_start = Some(x);
+                run_text.clear();
+            }
+            for ch in sp.content.chars() {
+                let w = ch.width().unwrap_or(0);
+                if col >= x && col < x + w.max(1) {
+                    hit = true;
+                }
+                run_text.push(ch);
+                x += w;
+            }
+        }
+        if !hit || run_text.is_empty() {
+            // fallback: any link recorded near this line
+            return self
+                .links
+                .iter()
+                .filter(|l| l.line.abs_diff(line) <= 2)
+                .min_by_key(|l| l.line.abs_diff(line))
+                .cloned();
+        }
+        let t = run_text.trim();
+        self.links
+            .iter()
+            .find(|l| l.text == t || l.text.contains(t) || t.contains(l.text.as_str()))
+            .or_else(|| {
+                self.links
+                    .iter()
+                    .find(|l| l.line.abs_diff(line) <= 3 && (l.text.contains(t) || t.contains(&l.text)))
+            })
+            .cloned()
     }
 
     pub(crate) fn dispatch_link(&mut self, link: &LinkEntry) {
         let url = link.url.as_str();
         if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("mailto:") {
-            match open_external(url) {
-                Ok(()) => self.status = format!("opened: {url}"),
-                Err(e) => self.status = format!("open failed: {e}"),
+            // ponytail: remote TUI often has no browser — OSC 52 copy beats xdg-open
+            match crate::app::visual::yank_osc52(url) {
+                Ok(()) => {
+                    let short = if url.chars().count() > 60 {
+                        format!("{}…", url.chars().take(57).collect::<String>())
+                    } else {
+                        url.to_string()
+                    };
+                    self.status = format!("copied link: {short}");
+                }
+                Err(e) => self.status = format!("copy link failed: {e}"),
             }
             return;
         }
         if let Some(anchor) = url.strip_prefix('#') {
+            self.push_link_hist();
             if let Some(h) = self
                 .headings
                 .iter()
@@ -308,6 +695,7 @@ impl App {
                 self.set_caret(h.line, 0);
                 self.status = format!("jumped to #{anchor}");
             } else {
+                self.link_hist.pop();
                 self.status = format!("heading not found: #{anchor}");
             }
             return;
@@ -331,6 +719,7 @@ impl App {
                 .find_entry_for_path(&resolved)
                 .or_else(|| self.source.ensure_local_doc(&resolved));
             if let Some(i) = idx {
+                self.push_link_hist();
                 if let Some(pos) = self.filtered.iter().position(|&di| di == i) {
                     self.list_sel = pos;
                 } else {
@@ -365,6 +754,49 @@ impl App {
         } else {
             self.status = format!("not found: {url}");
         }
+    }
+
+    pub(crate) fn push_link_hist(&mut self) {
+        let Some(doc_idx) = self.loaded_doc.or_else(|| self.selected_doc_index()) else {
+            return;
+        };
+        self.link_hist.push(LinkHist {
+            doc_idx,
+            list_sel: self.list_sel,
+            filter: self.filter.clone(),
+            scroll: self.scroll,
+            caret_line: self.caret_line,
+            caret_col: self.caret_col,
+        });
+        // ponytail: cap stack; drop oldest
+        if self.link_hist.len() > 32 {
+            self.link_hist.remove(0);
+        }
+    }
+
+    /// Restore previous f-link position. true if popped.
+    pub(crate) fn pop_link_hist(&mut self) -> bool {
+        let Some(h) = self.link_hist.pop() else {
+            return false;
+        };
+        if self.filter != h.filter {
+            self.filter = h.filter;
+            self.refilter_keep(Some(h.doc_idx));
+        }
+        if let Some(pos) = self.filtered.iter().position(|&i| i == h.doc_idx) {
+            self.list_sel = pos;
+        } else if !self.filtered.is_empty() {
+            self.list_sel = h.list_sel.min(self.filtered.len() - 1);
+        }
+        if self.loaded_doc != Some(h.doc_idx) {
+            self.load_selected();
+        }
+        self.scroll = h.scroll;
+        self.caret_line = h.caret_line.min(self.body.len().saturating_sub(1));
+        self.caret_col = h.caret_col.min(self.line_len(self.caret_line));
+        self.ensure_line_visible(self.caret_line);
+        self.status = "back".into();
+        true
     }
 
     pub(crate) fn open_current_dir(&mut self) {
@@ -471,15 +903,13 @@ pub fn draw_nav_overlay(frame: &mut Frame, area: Rect, app: &App, theme: Theme) 
             &app.nav,
             &app.headings,
             |h: &HeadingEntry| {
-                // spaces for depth; never show markdown # (strip if present)
                 let pad = "  ".repeat(h.level.saturating_sub(1) as usize);
                 let t = h.text.trim_start_matches('#').trim();
                 format!("{pad}{t}")
             },
-
-
         ),
         Overlay::Consult => draw_consult(frame, area, app, theme),
+        Overlay::Corpus => draw_corpus(frame, area, app, theme),
     }
 }
 
@@ -490,6 +920,108 @@ fn trunc(s: &str, n: usize) -> String {
     } else {
         chars[..n.saturating_sub(1)].iter().collect::<String>() + "…"
     }
+}
+
+fn draw_corpus(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
+    let h = area.height.saturating_sub(2).max(12);
+    let w = area.width.saturating_sub(2).max(50);
+    let popup = centered(w, h, area);
+    frame.render_widget(Clear, popup);
+
+    let n = app.nav.filtered.len();
+    let title = if n == 0 {
+        " corpus 0 ".into()
+    } else if app.nav.truncated {
+        format!(" corpus {}/{}+ ", app.nav.selected + 1, n)
+    } else {
+        format!(" corpus {}/{n} ", app.nav.selected + 1)
+    };
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border()));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let v = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(inner);
+    let q_style = Style::default().fg(if app.nav.query.trim().is_empty() {
+        theme.muted()
+    } else {
+        theme.search_text()
+    });
+    let hit_style = Style::default()
+        .fg(theme.status_focus_fg())
+        .bg(theme.search_text())
+        .add_modifier(Modifier::BOLD);
+    let normal = Style::default().fg(theme.list_text());
+    let muted = Style::default().fg(theme.muted());
+
+    let tokens: Vec<String> = app
+        .nav
+        .query
+        .split_whitespace()
+        .map(|t| t.to_lowercase())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let q_text = if app.nav.query.is_empty() {
+        "type to search…".to_string()
+    } else {
+        app.nav.query.clone()
+    };
+    let mut q_spans = if tokens.is_empty() {
+        vec![Span::styled(q_text, q_style)]
+    } else {
+        token_highlight_spans(&q_text, &tokens, q_style, hit_style)
+    };
+    q_spans.push(Span::styled(format!("  {n} entries"), muted));
+    frame.render_widget(Paragraph::new(Line::from(q_spans)), v[0]);
+    if v[0].width > 0 {
+        let col = app.nav.query.chars().count() as u16;
+        frame.set_cursor_position((
+            v[0].x + col.min(v[0].width.saturating_sub(1)),
+            v[0].y,
+        ));
+    }
+
+    // single-column title list
+    let vis = v[1].height.saturating_sub(1).max(1) as usize;
+    let start = if app.nav.selected >= vis {
+        app.nav.selected + 1 - vis
+    } else {
+        0
+    };
+    let end = (start + vis).min(n);
+    let items: Vec<ListItem> = app.nav.filtered[start..end]
+        .iter()
+        .enumerate()
+        .map(|(row, &idx)| {
+            let sel = start + row == app.nav.selected;
+            let hit = app.corpus_hits.get(idx);
+            let t = hit.map(|h| h.entry_title.as_str()).unwrap_or("?");
+            let style = if sel {
+                Style::default()
+                    .fg(theme.status_focus_fg())
+                    .bg(theme.search_text())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                normal
+            };
+            let spans = if tokens.is_empty() {
+                vec![Span::styled(trunc(t, 60), style)]
+            } else {
+                token_highlight_spans(&trunc(t, 60), &tokens, style, hit_style)
+            };
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+    frame.render_widget(
+        List::new(items).block(
+            Block::default()
+                .borders(Borders::TOP)
+                .title(" entries "),
+        ),
+        v[1],
+    );
 }
 
 fn draw_list_overlay<T, F>(
@@ -509,9 +1041,9 @@ fn draw_list_overlay<T, F>(
     let popup = centered(w, h, area);
     frame.render_widget(Clear, popup);
     let title = if nav.query.is_empty() {
-        format!("{title}  /filter")
+        format!("{title}  filter")
     } else {
-        format!("{title}  /{}", nav.query)
+        format!("{title}  {}", nav.query)
     };
     let block = Block::default()
         .title(title)
@@ -522,7 +1054,6 @@ fn draw_list_overlay<T, F>(
 
     let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(inner);
     let filter_line = Line::from(vec![
-        Span::styled("/", Style::default().fg(theme.vim_prompt())),
         Span::styled(
             if nav.query.is_empty() {
                 "type to filter…".into()
@@ -611,6 +1142,11 @@ fn draw_consult(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         Paragraph::new(q).style(Style::default().fg(theme.search_text())),
         v[0],
     );
+    if v[0].width > 0 {
+        let col = 2u16.saturating_add(app.nav.query.chars().count() as u16);
+        let col = col.min(v[0].width.saturating_sub(1));
+        frame.set_cursor_position((v[0].x + col, v[0].y));
+    }
 
     let tokens: Vec<String> = app
         .nav

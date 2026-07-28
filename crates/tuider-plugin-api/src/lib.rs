@@ -67,6 +67,9 @@ pub type FnDictReverse =
 pub type FnDictList = unsafe extern "C" fn(src: *mut c_void) -> *mut c_char;
 /// Optional dict: select active dictionary by index; 1 = ok.
 pub type FnDictSelect = unsafe extern "C" fn(src: *mut c_void, index: usize) -> c_int;
+/// Optional dict: fulltext search headwords+definitions → newline-separated headwords.
+pub type FnDictFulltextSearch =
+    unsafe extern "C" fn(src: *mut c_void, query: *const c_char, limit: usize) -> *mut c_char;
 
 
 // ── Helpers for plugin authors ────────────────────────────────────────────

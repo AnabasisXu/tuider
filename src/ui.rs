@@ -23,7 +23,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if area.width < MIN_COLS || area.height < MIN_ROWS {
         let msg = format!(
-            "  屏幕过小 / Terminal too small  \n  Need ≥{}×{}, got {}×{}  \n  请放大终端  ",
+            "  Terminal too small  \n  Need ≥{}×{}, got {}×{}  \n  Please enlarge the terminal  ",
             MIN_COLS, MIN_ROWS, area.width, area.height
         );
         let p = Paragraph::new(msg)
@@ -113,7 +113,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    if app.vim_search_mode() {
+    if app.vim_search_mode() || app.avy_query_mode() {
         app.set_list_area(None);
         let layout = Layout::vertical([
             Constraint::Min(1),
@@ -124,7 +124,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         app.set_content_area(Some(layout[0]));
         draw_content(frame, layout[0], app);
         draw_status(frame, layout[1], app);
-        draw_vim_search(frame, layout[2], app);
+        if app.avy_query_mode() {
+            draw_avy_search(frame, layout[2], app);
+        } else {
+            draw_vim_search(frame, layout[2], app);
+        }
     } else if app.show_sidebar() {
         let layout_mode = if compact_w {
             SearchLayout::Top
@@ -367,44 +371,45 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
                     "  TUIDER ",
                     Style::default().fg(theme.title()).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("— 终端阅读器", Style::default().fg(theme.muted())),
+                Span::styled("— terminal reader", Style::default().fg(theme.muted())),
             ]),
             Line::from(""),
-            Line::from(section("  基本操作")),
-            Line::from(vec![key("    侧栏开启  "), desc("焦点=搜索框；字母只过滤")]),
+            Line::from(section("  Basics")),
+            Line::from(vec![key("    Sidebar on "), desc("focus=search; letters filter only")]),
             Line::from(vec![
                 key("    Ctrl+F   "),
                 desc(if app.can_plugin_action() {
-                    "关侧栏后 a/o/f 等命令可用"
+                    "with sidebar off, a/o/f commands work"
                 } else {
-                    "关侧栏后 o/f 等命令可用"
+                    "with sidebar off, o/f commands work"
                 }),
             ]),
-            Line::from(vec![key("    ↑ / ↓    "), desc("浏览列表（预取正文）")]),
-            Line::from(vec![key("    Enter    "), desc("打开 / 重载选中")]),
+            Line::from(vec![key("    ↑ / ↓    "), desc("browse list (prefetch body)")]),
+            Line::from(vec![key("    Enter    "), desc("open / reload selection")]),
         ];
         if app.can_plugin_action() {
             help.push(Line::from(vec![
                 key("    a        "),
-                desc("抓取外链全文（侧栏关，HN）"),
+                desc("fetch linked article (sidebar off, HN)"),
             ]));
         }
         help.extend([
-            Line::from(vec![key("    [ / ]    "), desc("上一/下一主节（侧栏关）")]),
+            Line::from(vec![key("    [ / ]    "), desc("prev/next major section (sidebar off)")]),
             Line::from(""),
-            Line::from(section("  快捷键")),
-            Line::from(vec![key("    Ctrl+S   "), desc("搜索布局：左侧 / 顶部")]),
-            Line::from(vec![key("    /        "), desc("正文 vim 搜索（侧栏关）")]),
-            Line::from(vec![key("    n / N    "), desc("下一/上一匹配")]),
-            Line::from(vec![key("    v / V    "), desc("光标/行 visual · vv 选字 · y 复制")]),
-            Line::from(vec![key("    f / o    "), desc("链接 / 大纲（侧栏关）")]),
-            Line::from(vec![key("    Alt+f    "), desc("consult 空格多词过滤跳转")]),
-            Line::from(vec![key("    O        "), desc("打开目录（侧栏关）")]),
-            Line::from(vec![key("    ?        "), desc("帮助")]),
+            Line::from(section("  Keys")),
+            Line::from(vec![key("    Ctrl+S   "), desc("search layout: left / top")]),
+            Line::from(vec![key("    /        "), desc("in-body vim search (sidebar off)")]),
+            Line::from(vec![key("    n / N    "), desc("next/prev match")]),
+            Line::from(vec![key("    v V s zz "), desc("visual / line-visual / line-jump / avy")]),
+            Line::from(vec![key("    f / o    "), desc("links / outline; click link copies URL")]),
+            Line::from(vec![key("    Alt+f    "), desc("consult multi-word filter jump")]),
+            Line::from(vec![key("    A-S-f    "), desc("corpus search entries")]),
+            Line::from(vec![key("    O        "), desc("open directory (sidebar off)")]),
+            Line::from(vec![key("    ?        "), desc("help")]),
             Line::from(""),
-            Line::from(section("  滚动")),
-            Line::from(vec![key("    ↑↓ / Pg  "), desc("焦点区")]),
-            Line::from(vec![key("    Alt+↑↓   "), desc("另一区（通常正文）")]),
+            Line::from(section("  Scroll")),
+            Line::from(vec![key("    ↑↓ / Pg  "), desc("focused pane")]),
+            Line::from(vec![key("    Alt+↑↓   "), desc("other pane (usually body)")]),
         ]);
         frame.render_widget(Paragraph::new(help), inner);
         return;
@@ -413,6 +418,11 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
     let max_scroll = lines.len().saturating_sub(inner.height as usize) as u16;
     let scroll = app.scroll().min(max_scroll);
     let q = app.vim_query();
+    let avy_q = if app.avy_labels().is_some() {
+        app.avy_query()
+    } else {
+        ""
+    };
     let line_vis = app.visual_line_range();
     let char_vis = app.visual_char_sel();
     let cursor_cell = app.visual_cursor_cell();
@@ -421,8 +431,12 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
         .iter()
         .enumerate()
         .map(|(i, line)| {
+            // vim / highlight, or zz avy query highlight while labels shown
             let mut line = if !q.is_empty() {
                 highlight_line(line, q, theme, current.filter(|h| h.line == i))
+            } else if !avy_q.is_empty() {
+                // contiguous phrase (spaces significant) — not / orderless tokens
+                highlight_contiguous(line, avy_q, theme)
             } else {
                 line.clone()
             };
@@ -445,6 +459,28 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
                     line = paint_cursor_cell(line, cc, theme);
                 }
             }
+            // line-jump labels after other paints
+            if let Some(labels) = app.line_jump.as_ref() {
+                if let Some((lab, _)) = labels.iter().find(|(_, li)| *li == i) {
+                    let buf = app.line_jump_buf.as_str();
+                    if buf.is_empty() || lab.starts_with(buf) {
+                        line = paint_inline_label(line, 0, lab, theme);
+                    }
+                }
+            }
+            // zz avy: one-pass multi labels so styles don't wipe each other
+            if let Some(labels) = app.avy_labels() {
+                let buf = app.avy_label_buf();
+                let on_line: Vec<(&str, usize)> = labels
+                    .iter()
+                    .filter(|(_, li, _)| *li == i)
+                    .filter(|(lab, _, _)| buf.is_empty() || lab.starts_with(buf))
+                    .map(|(lab, _, col)| (lab.as_str(), *col))
+                    .collect();
+                if !on_line.is_empty() {
+                    line = paint_avy_labels(line, &on_line, theme);
+                }
+            }
             line
         })
         .collect();
@@ -456,38 +492,37 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn paint_cursor_cell(line: Line<'static>, col: usize, theme: Theme) -> Line<'static> {
-    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-    let chars: Vec<char> = text.chars().collect();
-    let n = chars.len();
     let caret = Style::default()
         .fg(theme.status_focus_fg())
         .bg(theme.search_text());
-    let plain = Style::default().fg(theme.list_text());
-    if n == 0 || col >= n {
-        // empty line or after last char: reverse space caret
-        let mut spans = Vec::new();
-        if n > 0 {
-            spans.push(Span::styled(chars.iter().collect::<String>(), plain));
+    // preserve per-char styles (search highlight etc.); only recolor caret cell
+    let mut pairs: Vec<(char, Style)> = Vec::new();
+    for sp in &line.spans {
+        for ch in sp.content.chars() {
+            pairs.push((ch, sp.style));
         }
+    }
+    let n = pairs.len();
+    if n == 0 || col >= n {
+        let mut spans: Vec<Span<'static>> = line.spans;
         spans.push(Span::styled(" ", caret));
         return Line::from(spans);
     }
+    pairs[col].1 = caret;
     let mut spans = Vec::new();
-    if col > 0 {
-        spans.push(Span::styled(
-            chars[..col].iter().collect::<String>(),
-            plain,
-        ));
+    let mut buf = String::new();
+    let mut st = pairs[0].1;
+    for &(ch, s) in &pairs {
+        if s != st {
+            if !buf.is_empty() {
+                spans.push(Span::styled(std::mem::take(&mut buf), st));
+            }
+            st = s;
+        }
+        buf.push(ch);
     }
-    spans.push(Span::styled(
-        chars[col..=col].iter().collect::<String>(),
-        caret,
-    ));
-    if col + 1 < n {
-        spans.push(Span::styled(
-            chars[col + 1..].iter().collect::<String>(),
-            plain,
-        ));
+    if !buf.is_empty() {
+        spans.push(Span::styled(buf, st));
     }
     Line::from(spans)
 }
@@ -535,13 +570,83 @@ fn paint_char_visual(
     Line::from(spans)
 }
 
+/// Whole-query contiguous highlight (spaces kept). Used by zz avy.
+fn highlight_contiguous(line: &Line<'static>, q: &str, theme: Theme) -> Line<'static> {
+    let tok: Vec<char> = q.to_lowercase().chars().collect();
+    if tok.is_empty() {
+        return line.clone();
+    }
+    let mut pairs: Vec<(char, Style)> = Vec::new();
+    for sp in &line.spans {
+        for ch in sp.content.chars() {
+            pairs.push((ch, sp.style));
+        }
+    }
+    let chars: Vec<char> = pairs.iter().map(|(c, _)| *c).collect();
+    let lower: Vec<char> = chars
+        .iter()
+        .map(|c| c.to_lowercase().next().unwrap_or(*c))
+        .collect();
+    let n = chars.len();
+    let m = tok.len();
+    let mut mark = vec![false; n];
+    if m <= n {
+        let mut i = 0;
+        while i + m <= n {
+            if lower[i..i + m] == tok[..] {
+                for b in &mut mark[i..i + m] {
+                    *b = true;
+                }
+                i += m;
+            } else {
+                i += 1;
+            }
+        }
+    }
+    if !mark.iter().any(|&b| b) {
+        return line.clone();
+    }
+    let hit = Style::default()
+        .fg(theme.status_focus_fg())
+        .bg(theme.search_text())
+        .add_modifier(Modifier::BOLD);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut i = 0;
+    while i < n {
+        let start = i;
+        if mark[i] {
+            i += 1;
+            while i < n && mark[i] {
+                i += 1;
+            }
+            spans.push(Span::styled(chars[start..i].iter().collect::<String>(), hit));
+        } else {
+            let mut buf = String::new();
+            let mut st = pairs[i].1;
+            while i < n && !mark[i] {
+                if pairs[i].1 != st {
+                    if !buf.is_empty() {
+                        spans.push(Span::styled(std::mem::take(&mut buf), st));
+                    }
+                    st = pairs[i].1;
+                }
+                buf.push(chars[i]);
+                i += 1;
+            }
+            if !buf.is_empty() {
+                spans.push(Span::styled(buf, st));
+            }
+        }
+    }
+    Line::from(spans)
+}
+
 fn highlight_line(
     line: &Line<'static>,
     q: &str,
     theme: Theme,
     current: Option<crate::app::MatchHit>,
 ) -> Line<'static> {
-    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
     let tokens: Vec<Vec<char>> = q
         .split_whitespace()
         .filter(|t| !t.is_empty())
@@ -550,10 +655,16 @@ fn highlight_line(
     if tokens.is_empty() {
         return line.clone();
     }
-    let chars: Vec<char> = text.chars().collect();
-    let lower: Vec<char> = text
-        .chars()
-        .map(|c| c.to_lowercase().next().unwrap_or(c))
+    let mut pairs: Vec<(char, Style)> = Vec::new();
+    for sp in &line.spans {
+        for ch in sp.content.chars() {
+            pairs.push((ch, sp.style));
+        }
+    }
+    let chars: Vec<char> = pairs.iter().map(|(c, _)| *c).collect();
+    let lower: Vec<char> = chars
+        .iter()
+        .map(|c| c.to_lowercase().next().unwrap_or(*c))
         .collect();
     let n = chars.len();
     let mut mark = vec![false; n];
@@ -583,27 +694,42 @@ fn highlight_line(
         .add_modifier(Modifier::BOLD);
     let cur = Style::default()
         .fg(theme.status_focus_fg())
-        .bg(Color::Rgb(250, 179, 135)) // peach current
+        .bg(Color::Rgb(220, 50, 47))
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-    let normal = Style::default().fg(theme.list_text());
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut i = 0;
     while i < n {
-        let on = mark[i];
         let start = i;
-        i += 1;
-        while i < n && mark[i] == on {
+        if mark[i] {
             i += 1;
-        }
-        let piece: String = chars[start..i].iter().collect();
-        let style = if !on {
-            normal
-        } else if current.is_some_and(|h| h.start < i && h.end > start) {
-            cur
+            while i < n && mark[i] {
+                i += 1;
+            }
+            let piece: String = chars[start..i].iter().collect();
+            let style = if current.is_some_and(|h| h.start < i && h.end > start) {
+                cur
+            } else {
+                hit
+            };
+            spans.push(Span::styled(piece, style));
         } else {
-            hit
-        };
-        spans.push(Span::styled(piece, style));
+            // preserve original styles for unmarked runs
+            let mut buf = String::new();
+            let mut st = pairs[i].1;
+            while i < n && !mark[i] {
+                if pairs[i].1 != st {
+                    if !buf.is_empty() {
+                        spans.push(Span::styled(std::mem::take(&mut buf), st));
+                    }
+                    st = pairs[i].1;
+                }
+                buf.push(chars[i]);
+                i += 1;
+            }
+            if !buf.is_empty() {
+                spans.push(Span::styled(buf, st));
+            }
+        }
     }
     Line::from(spans)
 }
@@ -630,6 +756,75 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
         ),
     ]);
     frame.render_widget(Paragraph::new(status), area);
+}
+
+fn paint_inline_label(line: Line<'static>, col: usize, lab: &str, theme: Theme) -> Line<'static> {
+    paint_avy_labels(line, &[(lab, col)], theme)
+}
+
+/// Overlay one or more labels on a line in a single pass (preserve all label styles).
+fn paint_avy_labels(line: Line<'static>, labels: &[(&str, usize)], theme: Theme) -> Line<'static> {
+    let label_st = Style::default()
+        .fg(theme.status_focus_fg())
+        .bg(theme.search_text())
+        .add_modifier(Modifier::BOLD);
+    let mut pairs: Vec<(char, Style)> = Vec::new();
+    for sp in &line.spans {
+        for ch in sp.content.chars() {
+            pairs.push((ch, sp.style));
+        }
+    }
+    for &(lab, col) in labels {
+        let lab_chars: Vec<char> = lab.chars().collect();
+        let need = col + lab_chars.len();
+        while pairs.len() < need {
+            pairs.push((' ', Style::default().fg(theme.list_text())));
+        }
+        for (k, ch) in lab_chars.into_iter().enumerate() {
+            if col + k < pairs.len() {
+                pairs[col + k] = (ch, label_st);
+            }
+        }
+    }
+    if pairs.is_empty() {
+        return line;
+    }
+    let mut spans = Vec::new();
+    let mut buf = String::new();
+    let mut st = pairs[0].1;
+    for &(ch, s) in &pairs {
+        if s != st {
+            if !buf.is_empty() {
+                spans.push(Span::styled(std::mem::take(&mut buf), st));
+            }
+            st = s;
+        }
+        buf.push(ch);
+    }
+    if !buf.is_empty() {
+        spans.push(Span::styled(buf, st));
+    }
+    Line::from(spans)
+}
+
+fn draw_avy_search(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = app.theme();
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(theme.border()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let line = Line::from(vec![
+        Span::styled("zz", Style::default().fg(theme.vim_prompt())),
+        Span::styled(" ", Style::default()),
+        Span::styled(app.avy_query(), Style::default().fg(theme.search_text())),
+    ]);
+    frame.render_widget(Paragraph::new(line), inner);
+    if inner.width > 0 {
+        let col = 3u16.saturating_add(app.avy_query().chars().count() as u16);
+        let col = col.min(inner.width.saturating_sub(1));
+        frame.set_cursor_position((inner.x + col, inner.y));
+    }
 }
 
 fn draw_vim_search(frame: &mut Frame, area: Rect, app: &App) {
@@ -667,10 +862,14 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
             ("Esc", "Clear filter / result / panel"),
             ("Tab", "Cycle dict / source layer"),
             ("/", "In-content search"),
+            ("zz", "Avy char jump (type → labels)"),
             ("[/]", "Prev/next major section"),
             ("o", "Outline / filter headings"),
-            ("v/V", "Cursor / line visual (vv=char)"),
+            ("v/V", "Char/line visual at caret · v again quits"),
+            ("s", "Line-jump labels"),
             ("y", "Yank selection (OSC 52)"),
+            ("d", "Selection → dict filter (dict only)"),
+            ("a", "Selection → AI system context"),
             ("Alt+L", "AI overlay (if built)"),
             ("Alt+Shift+L", "AI maximize"),
             ("Ctrl+Q", "Quit"),
@@ -682,8 +881,11 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
             entries.insert(i + 1, ("a", "Fetch full article (HN)"));
         }
     }
-    let help_height = (entries.len() as u16) + 4;
-    let help_width: u16 = 44;
+    let cfg_path = crate::config::config_display_path();
+    let cfg_s = cfg_path.display().to_string();
+    let show_cfg = !app.vim_search_mode();
+    let help_height = (entries.len() as u16) + 4 + u16::from(show_cfg);
+    let help_width: u16 = 44.max((cfg_s.len() as u16).saturating_add(18));
     let popup = centered_rect(help_width, help_height, area);
     frame.render_widget(Clear, popup);
     let block = Block::default()
@@ -703,7 +905,7 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    let lines: Vec<Line> = entries
+    let mut lines: Vec<Line> = entries
         .iter()
         .map(|(key, desc)| {
             Line::from(vec![
@@ -715,6 +917,15 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
             ])
         })
         .collect();
+    if show_cfg {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:<14}", "config"),
+                Style::default().fg(theme.key_label()),
+            ),
+            Span::styled(cfg_s, Style::default().fg(theme.muted())),
+        ]));
+    }
     frame.render_widget(Paragraph::new(lines), inner);
 }
 

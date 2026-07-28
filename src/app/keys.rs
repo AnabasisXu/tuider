@@ -54,6 +54,18 @@ impl App {
             return self.handle_dict_panel_key(key, ctrl, alt);
         }
 
+        if self.avy.is_some() {
+            self.handle_avy_key(key);
+            return false;
+        }
+
+
+        if self.line_jump.is_some() {
+            self.handle_line_jump_key(key);
+            return false;
+        }
+
+
         if self.handle_global(key, ctrl, alt) {
             return true;
         }
@@ -130,8 +142,38 @@ impl App {
         // Plain letters / symbols type into filter; single-key commands are disabled.
         let sidebar = self.show_sidebar() && self.visual.is_none();
 
-        // --- search-box focus (sidebar on) ---------------------------------
+        // Alt+f / A-S-f work with sidebar on (feed/file lists)
+        if self.visual.is_none()
+            && alt
+            && matches!(key.code, KeyCode::Char('f') | KeyCode::Char('F'))
+        {
+            if shift {
+                self.open_corpus();
+            } else {
+                self.open_consult();
+            }
+            return false;
+        }
+
+
+
         if sidebar {
+            // active / search: n/N must work even while sidebar filter owns letters
+            if !self.vim_query.is_empty()
+                && (key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT)
+            {
+                match key.code {
+                    KeyCode::Char('n') => {
+                        self.vim_next(1);
+                        return false;
+                    }
+                    KeyCode::Char('N') => {
+                        self.vim_next(-1);
+                        return false;
+                    }
+                    _ => {}
+                }
+            }
             if ctrl && matches!(key.code, KeyCode::Char('u') | KeyCode::Char('U')) {
                 self.clear_filter_keep_result();
                 return false;
@@ -191,8 +233,21 @@ impl App {
             self.handle_nav(key, alt, ctrl, shift, true);
             return false;
         }
-
         // --- body focus (sidebar hidden) -----------------------------------
+        // zz pending before motions
+        if !sidebar
+            && self.visual.is_none()
+            && key.modifiers == KeyModifiers::NONE
+            && self.pending_z
+        {
+            self.pending_z = false;
+            if matches!(key.code, KeyCode::Char('z')) {
+                self.start_avy();
+                return false;
+            }
+            // else fall through with this key
+        }
+
         // vim motions + caret (shared with visual); v/V start select at caret
         if !sidebar && self.visual.is_none() && !self.body.is_empty() {
             if self.handle_body_motion(key, ctrl) {
@@ -200,15 +255,34 @@ impl App {
             }
         }
 
-        if key.modifiers == KeyModifiers::NONE && !self.body.is_empty() && self.visual.is_none() {
+
+        if !self.body.is_empty() && self.visual.is_none() {
             match key.code {
-                KeyCode::Char('v') => {
-                    self.start_visual(VisualKind::Cursor);
+                KeyCode::Char('v') if key.modifiers == KeyModifiers::NONE => {
+                    // vim-like char visual at caret (no Cursor intermediate)
+                    self.start_visual(VisualKind::Char);
                     return false;
                 }
-                KeyCode::Char('V') => {
+                KeyCode::Char('s') if key.modifiers == KeyModifiers::NONE => {
+                    self.start_line_jump();
+                    return false;
+                }
+                KeyCode::Char('z') if key.modifiers == KeyModifiers::NONE => {
+                    self.pending_z = true;
+                    self.status = "z…".into();
+                    return false;
+                }
+                KeyCode::Char('V')
+                    if key.modifiers == KeyModifiers::NONE
+                        || key.modifiers == KeyModifiers::SHIFT =>
+                {
                     self.start_visual(VisualKind::Line);
                     return false;
+                }
+                KeyCode::Backspace if key.modifiers == KeyModifiers::NONE => {
+                    if self.pop_link_hist() {
+                        return false;
+                    }
                 }
                 _ => {}
             }
@@ -231,10 +305,6 @@ impl App {
                     }
                     return false;
                 }
-                KeyCode::Char('O') => {
-                    self.open_current_dir();
-                    return false;
-                }
                 KeyCode::Char('[') => {
                     self.jump_section(-1);
                     return false;
@@ -246,6 +316,7 @@ impl App {
                 KeyCode::Char('/') => {
                     self.vim_mode = true;
                     self.vim_input.clear();
+                    self.vim_hist_idx = None;
                     return false;
                 }
                 _ => {}
@@ -253,8 +324,11 @@ impl App {
         }
 
         if self.visual.is_none() {
-            if alt && matches!(key.code, KeyCode::Char('f') | KeyCode::Char('F')) {
-                self.open_consult();
+            if matches!(key.code, KeyCode::Char('O'))
+                && (key.modifiers == KeyModifiers::NONE
+                    || key.modifiers == KeyModifiers::SHIFT)
+            {
+                self.open_current_dir();
                 return false;
             }
             if alt && matches!(key.code, KeyCode::Char('o') | KeyCode::Char('O')) {
@@ -275,7 +349,9 @@ impl App {
             return false;
         }
 
-        if !self.vim_query.is_empty() && key.modifiers == KeyModifiers::NONE {
+        if !self.vim_query.is_empty()
+            && (key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT)
+        {
             match key.code {
                 KeyCode::Char('n') => {
                     self.vim_next(1);
@@ -302,6 +378,124 @@ impl App {
         self.handle_nav(key, alt, ctrl, shift, false);
         false
     }
+
+    /// Labels for visible lines: user keys qwedrasdfwzxcv (unique).
+    const LINE_JUMP_KEYS: &'static [char] = &[
+        'q', 'w', 'e', 'd', 'r', 'a', 's', 'f', 'z', 'x', 'c', 'v',
+    ];
+    /// 1-char if fits; else 2-char (then 3) combos so full viewport is covered.
+    pub(crate) fn line_jump_label_strings(n: usize) -> Vec<String> {
+        let keys = Self::LINE_JUMP_KEYS;
+        let mut out = Vec::with_capacity(n);
+        if n == 0 {
+            return out;
+        }
+        if n <= keys.len() {
+            for &ch in keys.iter().take(n) {
+                out.push(ch.to_string());
+            }
+            return out;
+        }
+        for &a in keys {
+            for &b in keys {
+                out.push(format!("{a}{b}"));
+                if out.len() >= n {
+                    return out;
+                }
+            }
+        }
+        for &a in keys {
+            for &b in keys {
+                for &c in keys {
+                    out.push(format!("{a}{b}{c}"));
+                    if out.len() >= n {
+                        return out;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    pub(crate) fn start_line_jump(&mut self) {
+        if self.body.is_empty() {
+            return;
+        }
+        // Borders::TOP eats 1 row — same as content_view_h
+        let h = self
+            .content_area
+            .map(|a| a.height.saturating_sub(1) as usize)
+            .unwrap_or(20)
+            .max(1);
+        let top = self.scroll as usize;
+        let n = h.min(self.body.len().saturating_sub(top));
+        if n == 0 {
+            return;
+        }
+        let strings = Self::line_jump_label_strings(n);
+        let labels: Vec<(String, usize)> = strings
+            .into_iter()
+            .enumerate()
+            .map(|(i, s)| (s, top + i))
+            .collect();
+        self.line_jump_buf.clear();
+        self.line_jump = Some(labels);
+        self.status = "line jump — type label · Esc".into();
+    }
+
+    fn handle_line_jump_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.line_jump = None;
+                self.line_jump_buf.clear();
+                self.status = "line jump cancelled".into();
+            }
+            KeyCode::Backspace => {
+                self.line_jump_buf.pop();
+                if self.line_jump_buf.is_empty() {
+                    self.status = "line jump — type label · Esc".into();
+                } else {
+                    self.status = format!("line jump — {}…", self.line_jump_buf);
+                }
+            }
+            KeyCode::Char(c)
+                if key.modifiers == KeyModifiers::NONE
+                    || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                let c = c.to_ascii_lowercase();
+                if !c.is_ascii_alphabetic() {
+                    return;
+                }
+                self.line_jump_buf.push(c);
+                let Some(labels) = self.line_jump.as_ref() else {
+                    return;
+                };
+                let buf = self.line_jump_buf.as_str();
+                if let Some((_, line)) = labels.iter().find(|(l, _)| l == buf) {
+                    let line = *line;
+                    self.line_jump = None;
+                    self.line_jump_buf.clear();
+                    self.body_caret_shown = true;
+                    self.set_caret(line, 0);
+                    self.status = format!("jumped to line {}", line + 1);
+                    return;
+                }
+                if labels.iter().any(|(l, _)| l.starts_with(buf)) {
+                    self.status = format!("line jump — {buf}…");
+                    return;
+                }
+                self.line_jump = None;
+                self.line_jump_buf.clear();
+                self.status = "line jump cancelled".into();
+            }
+            _ => {
+                self.line_jump = None;
+                self.line_jump_buf.clear();
+                self.status = "line jump cancelled".into();
+            }
+        }
+    }
+
 
 
 
@@ -375,13 +569,14 @@ impl App {
         if self.pending_g {
             self.pending_g = false;
             if none && matches!(key.code, KeyCode::Char('g')) {
+                self.body_caret_shown = true;
                 self.set_caret(0, 0);
                 return true;
             }
             // else fall through
         }
 
-        match key.code {
+        let hit = match key.code {
             KeyCode::Char('h') | KeyCode::Left if !ctrl && (none || key.modifiers == KeyModifiers::NONE) => {
                 self.body_move_col(-1);
                 true
@@ -490,7 +685,12 @@ impl App {
                 true
             }
             _ => false,
+        };
+        // pending_g alone is not a caret reveal
+        if hit && !(none && matches!(key.code, KeyCode::Char('g'))) {
+            self.body_caret_shown = true;
         }
+        hit
     }
 
     /// Returns true if key was consumed by visual mode.
@@ -524,19 +724,30 @@ impl App {
                 true
             }
             KeyCode::Char('v') if none => {
+                // second v: exit visual (vim); legacy Cursor → Char if any
                 if self
                     .visual
                     .as_ref()
                     .is_some_and(|v| v.kind == VisualKind::Cursor)
                 {
                     self.visual_cursor_to_char();
-                    true
                 } else {
-                    true // ignore extra v in Char/Line
+                    self.visual = None;
+                    self.pending_g = false;
+                    self.status = "visual off".into();
                 }
+                true
             }
             KeyCode::Char('y') if none => {
                 self.yank_selection();
+                true
+            }
+            KeyCode::Char('d') if none => {
+                self.dict_from_selection();
+                true
+            }
+            KeyCode::Char('a') if none => {
+                self.ai_from_selection();
                 true
             }
             KeyCode::Up | KeyCode::Char('k') if !ctrl => {

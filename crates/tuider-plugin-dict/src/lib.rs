@@ -746,6 +746,60 @@ pub unsafe extern "C" fn tuider_dict_reverse(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn tuider_dict_fulltext_search(
+    src: *mut c_void,
+    query: *const c_char,
+    limit: usize,
+) -> *mut c_char {
+    let Some(s) = src_state(src) else {
+        return std::ptr::null_mut();
+    };
+    if query.is_null() {
+        return cstring_or_null("");
+    }
+    let q = unsafe { std::ffi::CStr::from_ptr(query) }
+        .to_string_lossy()
+        .to_lowercase();
+    if q.is_empty() {
+        return cstring_or_null("");
+    }
+    let lim = if limit == 0 { 500 } else { limit };
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    // 1) headword substring match (cheap)
+    for d in &s.dicts {
+        for name in &d.names {
+            if name.to_lowercase().contains(&q) && seen.insert(name.clone()) {
+                out.push(name.clone());
+                if out.len() >= lim {
+                    return cstring_or_null(&out.join("\n"));
+                }
+            }
+        }
+    }
+    // 2) definition search (expensive — only if query not found in headwords)
+    for d in &s.dicts {
+        for name in &d.names {
+            if seen.contains(name) {
+                continue;
+            }
+            let Ok(Some(rec)) = d.file.lookup(name) else {
+                continue;
+            };
+            let plain = strip_tags_light(&rec.text).to_lowercase();
+            if plain.contains(&q) {
+                seen.insert(name.clone());
+                out.push(name.clone());
+                if out.len() >= lim {
+                    return cstring_or_null(&out.join("\n"));
+                }
+            }
+        }
+    }
+    cstring_or_null(&out.join("\n"))
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tuider_dict_list(src: *mut c_void) -> *mut c_char {
     let Some(s) = src_state(src) else {
         return std::ptr::null_mut();

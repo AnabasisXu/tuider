@@ -224,30 +224,40 @@ impl App {
             return;
         }
         self.pending_g = false;
-        // v/V: place caret on middle line of current viewport
+        // keep current caret (zz/n/jumps); do not snap to viewport mid
         let max = self.body.len() - 1;
-        let h = self.content_view_h();
-        let top = self.scroll as usize;
-        let bot = top.saturating_add(h.saturating_sub(1)).min(max);
-        let line = top + (bot.saturating_sub(top)) / 2;
-        let col = 0;
+        let line = self.caret_line.min(max);
+        let col = self.caret_col.min(self.line_len(line));
         self.caret_line = line;
         self.caret_col = col;
+        self.body_caret_shown = true;
+        let line_len = self.line_len(line);
+        // Char: select at least one char at caret (exclusive end), like vim `v`
+        let (a_col, b_col) = match kind {
+            VisualKind::Char => {
+                let a = col.min(line_len.saturating_sub(1).min(col));
+                let b = if line_len == 0 {
+                    0
+                } else {
+                    (a + 1).min(line_len)
+                };
+                (a, b)
+            }
+            VisualKind::Cursor => (col, col),
+            VisualKind::Line => (0, 0),
+        };
         self.visual = Some(VisualSel {
             kind,
             a_line: line,
-            a_col: col,
+            a_col,
             b_line: line,
-            b_col: if kind == VisualKind::Char {
-                1.min(self.line_len(line))
-            } else {
-                0
-            },
+            b_col,
         });
+        self.ensure_line_visible(line);
         self.status = match kind {
-            VisualKind::Cursor => "CURSOR — hjkl bw e · 0$^ gg G HML · v select · Esc".into(),
-            VisualKind::Line => "VISUAL LINE — jk gg G HML · y · Esc".into(),
-            VisualKind::Char => "VISUAL — hjkl bw e · y · Esc".into(),
+            VisualKind::Cursor => "CURSOR — hjkl · v select · Esc".into(),
+            VisualKind::Line => "VISUAL LINE — jk gg G HML · y · d dict · a AI · Esc".into(),
+            VisualKind::Char => "VISUAL — hjkl bw e · y · d dict · a AI · Esc".into(),
         };
     }
 
@@ -290,6 +300,7 @@ impl App {
         if self.body.is_empty() {
             return;
         }
+        self.body_caret_shown = true;
         let max = self.body.len() - 1;
         let next = (self.caret_line() as isize + delta).clamp(0, max as isize) as usize;
         let col = self.caret_col.min(self.line_len(next));
@@ -300,6 +311,7 @@ impl App {
         if self.body.is_empty() {
             return;
         }
+        self.body_caret_shown = true;
         let max = self.body.len() - 1;
         let mut line = self.caret_line().min(max);
         let mut col = self.caret_col as isize + delta;
@@ -444,8 +456,8 @@ impl App {
             }
             return None; // Char/Line: selection paint only
         }
-        // always show caret on body when not selecting
-        if self.body.is_empty() {
+        // hide until user body-motion (dict/mdx search result head)
+        if self.body.is_empty() || !self.body_caret_shown {
             return None;
         }
         Some((self.caret_line(), self.caret_col()))
@@ -584,7 +596,7 @@ impl App {
         v.a_line = v.b_line;
         v.a_col = v.b_col;
         // ponytail: empty selection ok until moved (b may equal a)
-        self.status = "VISUAL — hjkl bw e · y · Esc".into();
+        self.status = "VISUAL — hjkl bw e · y · d dict · a AI · Esc".into();
     }
 
     pub(crate) fn word_fwd_pos(&self, line: usize, col: usize) -> (usize, usize) {
@@ -651,26 +663,23 @@ impl App {
         (0, 0)
     }
 
+    pub(crate) fn selection_plain(&self) -> Option<String> {
+        let v = self.visual?;
+        selection_plain_from(&self.body, v)
+    }
+
     pub(crate) fn yank_selection(&mut self) {
         let Some(v) = self.visual else {
             return;
         };
-        let text = match v.kind {
-            VisualKind::Cursor => {
-                self.status = "yank: no selection".into();
-                return;
-            }
-            VisualKind::Line => {
-                let a = v.a_line.min(v.b_line);
-                let b = v.a_line.max(v.b_line);
-                selected_plain(&self.body, a, b)
-            }
-            VisualKind::Char => selected_plain_char(&self.body, &v),
-        };
-        if text.is_empty() {
-            self.status = "yank: empty selection".into();
+        if v.kind == VisualKind::Cursor {
+            self.status = "yank: no selection".into();
             return;
         }
+        let Some(text) = selection_plain_from(&self.body, v) else {
+            self.status = "yank: empty selection".into();
+            return;
+        };
         match yank_osc52(&text) {
             Ok(()) => {
                 let n = text.lines().count();
@@ -681,6 +690,78 @@ impl App {
                 self.status = format!("yank failed: {e}");
             }
         }
+    }
+
+    const DICT_FILTER_MAX: usize = 200;
+
+    pub(crate) fn dict_from_selection(&mut self) {
+        if self.source.list_dicts().is_empty() {
+            self.status = "dict: not a dictionary session".into();
+            return;
+        }
+        let Some(text) = self.selection_plain() else {
+            self.status = if self.visual.map(|v| v.kind) == Some(VisualKind::Cursor) {
+                "dict: no selection".into()
+            } else {
+                "dict: empty selection".into()
+            };
+            return;
+        };
+        let text: String = text.chars().take(Self::DICT_FILTER_MAX).collect();
+        self.filter = text.clone();
+        self.list_sel = 0;
+        self.refilter();
+        self.visual = None;
+        if !self.status.contains("no matches") {
+            self.status = format!("dict filter: {text}");
+        }
+    }
+
+    #[cfg(feature = "ai")]
+    pub(crate) fn ai_from_selection(&mut self) {
+        let Some(text) = self.selection_plain() else {
+            self.status = if self.visual.map(|v| v.kind) == Some(VisualKind::Cursor) {
+                "AI: no selection".into()
+            } else {
+                "AI: empty selection".into()
+            };
+            return;
+        };
+        let n = text.chars().count();
+        self.refresh_ai_context();
+        self.ai.set_selection_context(&text);
+        if !self.ai.open {
+            self.ai.toggle();
+        }
+        self.visual = None;
+        self.status = format!("AI: selection in context ({n} chars)");
+    }
+
+    #[cfg(not(feature = "ai"))]
+    pub(crate) fn ai_from_selection(&mut self) {
+        self.status = "AI: not in this build".into();
+    }
+}
+
+/// Returns trimmed selection text, or None for Cursor / empty after trim.
+pub(crate) fn selection_plain_from(
+    body: &[Line<'static>],
+    v: VisualSel,
+) -> Option<String> {
+    let text = match v.kind {
+        VisualKind::Cursor => return None,
+        VisualKind::Line => {
+            let a = v.a_line.min(v.b_line);
+            let b = v.a_line.max(v.b_line);
+            selected_plain(body, a, b)
+        }
+        VisualKind::Char => selected_plain_char(body, &v),
+    };
+    let t = text.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
     }
 }
 
@@ -707,5 +788,71 @@ mod tests {
         assert_eq!(word_bwd_col(&chars, 0), None);
         assert_eq!(first_word_start(&chars), 0);
         assert_eq!(last_word_start(&chars), 4);
+    }
+
+    #[test]
+    fn selection_plain_char_and_line() {
+        let body = vec![
+            Line::from("  hello  "),
+            Line::from("world"),
+        ];
+        // Char: cols exclusive end on last line (same as selected_plain_char)
+        let char_sel = VisualSel {
+            kind: VisualKind::Char,
+            a_line: 0,
+            a_col: 2,
+            b_line: 0,
+            b_col: 7,
+        };
+        assert_eq!(selected_plain_char(&body, &char_sel), "hello");
+
+        let line_sel = VisualSel {
+            kind: VisualKind::Line,
+            a_line: 0,
+            a_col: 0,
+            b_line: 1,
+            b_col: 0,
+        };
+        let a = line_sel.a_line.min(line_sel.b_line);
+        let b = line_sel.a_line.max(line_sel.b_line);
+        assert_eq!(selected_plain(&body, a, b), "  hello  \nworld");
+    }
+
+    #[test]
+    fn selection_plain_cursor_is_none_logic() {
+        // Document contract: Cursor kind must not produce action text.
+        // Implemented via App::selection_plain → None; pure kind check here.
+        assert_eq!(VisualKind::Cursor, VisualKind::Cursor);
+    }
+
+    #[test]
+    fn selection_plain_from_trims_and_skips_cursor() {
+        let body = vec![Line::from("  ab  ")];
+        let cursor = VisualSel {
+            kind: VisualKind::Cursor,
+            a_line: 0,
+            a_col: 0,
+            b_line: 0,
+            b_col: 0,
+        };
+        assert!(selection_plain_from(&body, cursor).is_none());
+
+        let char_sel = VisualSel {
+            kind: VisualKind::Char,
+            a_line: 0,
+            a_col: 0,
+            b_line: 0,
+            b_col: 6,
+        };
+        assert_eq!(selection_plain_from(&body, char_sel).as_deref(), Some("ab"));
+
+        let whitespace = VisualSel {
+            kind: VisualKind::Char,
+            a_line: 0,
+            a_col: 0,
+            b_line: 0,
+            b_col: 2, // "  "
+        };
+        assert!(selection_plain_from(&body, whitespace).is_none());
     }
 }

@@ -10,7 +10,7 @@ pub(crate) mod nav;
 mod search;
 mod visual;
 
-use crossterm::event::{self, Event};
+use crossterm::event;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::DefaultTerminal;
@@ -64,6 +64,9 @@ pub struct App {
     pub(crate) vim_query: String,
     /// Index into current match list (char-level hits).
     pub(crate) vim_match_idx: usize,
+    /// `/` search history (oldest → newest).
+    pub(crate) vim_history: Vec<String>,
+    pub(crate) vim_hist_idx: Option<usize>,
     #[cfg(feature = "ai")]
     pub(crate) ai: crate::ai::AiSession,
     pub(crate) visual: Option<VisualSel>,
@@ -77,6 +80,27 @@ pub struct App {
     pub(crate) dict_panel_names: Vec<String>,
     /// gg pending (visual/cursor motion).
     pub(crate) pending_g: bool,
+    /// zz pending (first `z`).
+    pub(crate) pending_z: bool,
+    /// f-link in-app history; Backspace pops (doc + scroll/caret).
+    pub(crate) link_hist: Vec<nav::LinkHist>,
+    /// `v` visible-line jump labels (multi-key ok) + typed prefix.
+    pub(crate) line_jump: Option<Vec<(String, usize)>>,
+    pub(crate) line_jump_buf: String,
+    /// Alt+f consult query history (oldest → newest).
+    pub(crate) consult_history: Vec<String>,
+    /// While browsing history with ↑↓; None = live edit.
+    pub(crate) consult_hist_idx: Option<usize>,
+    /// Alt+Shift+f corpus hits (entry titles).
+    pub(crate) corpus_hits: Vec<nav::CorpusHit>,
+    /// Corpus query history (oldest → newest).
+    pub(crate) corpus_history: Vec<String>,
+    /// While browsing corpus history with C-p/n; None = live edit.
+    pub(crate) corpus_hist_idx: Option<usize>,
+    /// Body cell caret paint; off until user moves (dict/mdx default).
+    pub(crate) body_caret_shown: bool,
+    /// `zz` avy-goto-char style jump.
+    pub(crate) avy: Option<search::AvyState>,
 }
 
 impl App {
@@ -104,6 +128,8 @@ impl App {
             vim_input: String::new(),
             vim_query: String::new(),
             vim_match_idx: 0,
+            vim_history: Vec::new(),
+            vim_hist_idx: None,
             #[cfg(feature = "ai")]
             ai: crate::ai::AiSession::from_file_config(file_config()),
             visual: None,
@@ -114,6 +140,17 @@ impl App {
             dict_panel: None,
             dict_panel_names: Vec::new(),
             pending_g: false,
+            pending_z: false,
+            link_hist: Vec::new(),
+            line_jump: None,
+            line_jump_buf: String::new(),
+            consult_history: Vec::new(),
+            consult_hist_idx: None,
+            corpus_hits: Vec::new(),
+            corpus_history: Vec::new(),
+            corpus_hist_idx: None,
+            body_caret_shown: false,
+            avy: None,
         };
         app.refilter();
         if app.filtered.is_empty() {
@@ -126,27 +163,43 @@ impl App {
     }
 
     pub fn run(mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
-        loop {
-            #[cfg(feature = "ai")]
-            self.ai.poll(self.source.as_mut());
+        use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
+        use crossterm::execute;
+        execute!(std::io::stdout(), EnableMouseCapture)?;
+        let result = (|| {
+            loop {
+                #[cfg(feature = "ai")]
+                self.ai.poll(self.source.as_mut());
 
-            terminal.draw(|f| ui::draw(f, &mut self))?;
-            let timeout = if cfg!(feature = "ai") {
-                std::time::Duration::from_millis(80)
-            } else {
-                std::time::Duration::from_millis(200)
-            };
-            if !event::poll(timeout)? {
-                continue;
+                terminal.draw(|f| ui::draw(f, &mut self))?;
+                let timeout = if cfg!(feature = "ai") {
+                    std::time::Duration::from_millis(80)
+                } else {
+                    std::time::Duration::from_millis(200)
+                };
+                if !event::poll(timeout)? {
+                    continue;
+                }
+                match event::read()? {
+                    Event::Key(key) => {
+                        // ignore key release / repeat if present
+                        if key.kind != KeyEventKind::Press {
+                            continue;
+                        }
+                        if self.handle_key(key) {
+                            break;
+                        }
+                    }
+                    Event::Mouse(m) => {
+                        self.handle_mouse(m);
+                    }
+                    _ => {}
+                }
             }
-            let Event::Key(key) = event::read()? else {
-                continue;
-            };
-            if self.handle_key(key) {
-                break;
-            }
-        }
-        Ok(())
+            Ok(())
+        })();
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+        result
     }
 
     // ── ui accessors ──────────────────────────────────────────────────────
@@ -261,11 +314,12 @@ impl App {
         if self.dict_panel.is_some() {
             return "dicts";
         }
-        if self.nav.overlay.is_some() {
+        if self.nav_open() {
             return match self.nav.overlay {
                 Some(nav::Overlay::Links) => "links",
                 Some(nav::Overlay::Toc) => "outline",
                 Some(nav::Overlay::Consult) => "consult",
+                Some(nav::Overlay::Corpus) => "corpus",
                 None => "nav",
             };
         }
@@ -380,6 +434,23 @@ impl App {
         } else if line > bottom {
             self.scroll = line.saturating_sub(h.saturating_sub(1)) as u16;
         }
+    }
+
+    /// Put `line` near vertical center of the content viewport (search jumps).
+    pub(crate) fn center_line_in_view(&mut self, line: usize) {
+        if self.body.is_empty() {
+            self.scroll = 0;
+            return;
+        }
+        let h = self
+            .content_area
+            .map(|a| a.height.saturating_sub(1) as usize)
+            .unwrap_or(20)
+            .max(1);
+        let max_line = self.body.len() - 1;
+        let line = line.min(max_line);
+        let max_scroll = self.body.len().saturating_sub(h);
+        self.scroll = line.saturating_sub(h / 2).min(max_scroll) as u16;
     }
 
     #[cfg(feature = "ai")]
@@ -598,6 +669,7 @@ impl App {
         self.scroll = 0;
         self.caret_line = 0;
         self.caret_col = 0;
+        self.body_caret_shown = false;
         self.status = result.status;
         self.loaded_doc = Some(di);
         self.visual = None;
@@ -622,7 +694,7 @@ impl App {
             self.load_selected();
         }
         if action == "article" {
-            self.status = "a: 抓取全文…".into();
+            self.status = "a: fetching article…".into();
         }
         // plugin sets last_action_note → STATUS trailer; always reload to surface it
         let _ok = self.source.action(di, action);
@@ -840,6 +912,19 @@ mod tests {
     }
 
     #[test]
+    fn avy_hits_contiguous_case_insensitive() {
+        let body = vec![
+            Line::from(Span::raw("Foo bar foo")),
+            Line::from(Span::raw("baz")),
+        ];
+        let hits = search::find_avy_hits(&body, "foo");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].start, 0);
+        assert_eq!(hits[1].start, 8);
+        assert_eq!(search::find_avy_hits(&body, "nope").len(), 0);
+    }
+
+    #[test]
     fn match_hits_orderless_tokens() {
         let body = vec![Line::from(Span::raw("see md then txt here"))];
         let hits = search::find_hits(&body, "txt md");
@@ -865,5 +950,224 @@ mod tests {
         }
         let s = Empty;
         assert!(!s.has_action());
+    }
+
+    struct MockDict {
+        entries: Vec<String>,
+        dicts: Vec<String>,
+    }
+
+    impl crate::plugin::ContentSource for MockDict {
+        fn title(&self) -> &str {
+            "mock-dict"
+        }
+        fn entries(&self) -> &[String] {
+            &self.entries
+        }
+        fn load(&mut self, index: usize, _width: usize) -> crate::plugin::LoadResult {
+            let name = self.entries.get(index).cloned().unwrap_or_default();
+            crate::plugin::LoadResult::plain(
+                vec![ratatui::text::Line::from(name.clone())],
+                name,
+            )
+        }
+        fn list_dicts(&self) -> Vec<String> {
+            self.dicts.clone()
+        }
+    }
+
+    struct MockPlain {
+        entries: Vec<String>,
+    }
+
+    impl crate::plugin::ContentSource for MockPlain {
+        fn title(&self) -> &str {
+            "plain"
+        }
+        fn entries(&self) -> &[String] {
+            &self.entries
+        }
+        fn load(&mut self, _i: usize, _w: usize) -> crate::plugin::LoadResult {
+            crate::plugin::LoadResult::plain(vec![], "x".into())
+        }
+    }
+
+    #[test]
+    fn dict_from_selection_sets_filter() {
+        let mut app = App::new(Box::new(MockDict {
+            entries: vec!["apple".into(), "apricot".into(), "banana".into()],
+            dicts: vec!["en".into()],
+        }));
+        app.body = vec![Line::from("xx apple yy")];
+        app.visual = Some(VisualSel {
+            kind: VisualKind::Char,
+            a_line: 0,
+            a_col: 3,
+            b_line: 0,
+            b_col: 8,
+        });
+        app.dict_from_selection();
+        assert_eq!(app.filter, "apple");
+        assert!(app.visual.is_none());
+        assert!(
+            app.filtered
+                .iter()
+                .any(|&i| app.source.entries()[i].contains("apple"))
+        );
+    }
+
+    #[test]
+    fn dict_from_selection_rejects_non_dict() {
+        let mut app = App::new(Box::new(MockPlain {
+            entries: vec!["f".into()],
+        }));
+        app.body = vec![Line::from("word")];
+        app.visual = Some(VisualSel {
+            kind: VisualKind::Char,
+            a_line: 0,
+            a_col: 0,
+            b_line: 0,
+            b_col: 4,
+        });
+        app.dict_from_selection();
+        assert!(app.visual.is_some());
+        assert!(app.status.contains("not a dictionary"));
+        assert!(app.filter.is_empty());
+    }
+
+    #[test]
+    fn sidebar_o_types_filter_not_toc() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new(Box::new(MockPlain {
+            entries: vec!["alpha".into(), "omega".into()],
+        }));
+        app.headings = vec![crate::plugin::HeadingEntry {
+            level: 1,
+            text: "H".into(),
+            line: 0,
+        }];
+        assert!(app.show_sidebar());
+        assert!(!app.nav_open());
+        app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+        assert_eq!(app.filter, "o");
+        assert!(!app.nav_open());
+        // body focus: o opens outline (headings may be cleared by refilter)
+        app.show_sidebar = false;
+        app.filter.clear();
+        app.headings = vec![crate::plugin::HeadingEntry {
+            level: 1,
+            text: "H".into(),
+            line: 0,
+        }];
+        app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+        assert!(app.nav_open());
+        assert!(app.filter.is_empty());
+    }
+
+    #[cfg(feature = "ai")]
+    #[test]
+    fn ai_from_selection_opens_and_sets_context() {
+        let mut app = App::new(Box::new(MockPlain {
+            entries: vec!["f".into()],
+        }));
+        app.body = vec![Line::from("selected text")];
+        app.visual = Some(VisualSel {
+            kind: VisualKind::Char,
+            a_line: 0,
+            a_col: 0,
+            b_line: 0,
+            b_col: 13,
+        });
+        app.ai.open = false;
+        app.ai_from_selection();
+        assert!(app.visual.is_none());
+        assert!(app.ai.open);
+        assert!(app.ai.input.is_empty());
+        assert_eq!(app.ai.selection_context, "selected text");
+        assert!(app.status.contains("selection in context"));
+    }
+
+    #[test]
+    fn testbackend_draws_help_overlay() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = App::new(Box::new(MockPlain {
+            entries: vec!["alpha".into(), "beta".into()],
+        }));
+        app.body = vec![Line::from("Hello paint body")];
+        app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+        assert!(app.show_help());
+
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let text: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            text.contains("Ctrl+Q") && text.contains("Quit"),
+            "help overlay missing in paint: {text}"
+        );
+    }
+
+    #[test]
+    fn app_loads_epub_plugin_body() {
+        use std::path::PathBuf;
+        let so = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/debug/libtuider_epub.so");
+        if !so.is_file() {
+            eprintln!("skip: no {}", so.display());
+            return;
+        }
+        let reg = crate::loader::PluginRegistry::load(so.parent().unwrap());
+        let plug = reg.get("epub").expect("epub so");
+        let book = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("crates/tuider-plugin-epub/tests/fixtures/sample2.epub");
+        let src = plug
+            .open_from_args(&[book.to_string_lossy().into_owned()])
+            .expect("open");
+        let app = App::new(Box::new(src));
+        assert_eq!(app.source.entries().len(), 2);
+        assert_eq!(app.filtered.len(), 2);
+        assert_eq!(app.loaded_doc, Some(0));
+        let plain: String = app
+            .body
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            plain.contains("Hello from chapter one"),
+            "app body: {plain}"
+        );
+        // multi-chapter → sidebar on
+        assert!(app.show_sidebar);
+        // switch to ch2 via load_selected path
+        let mut app = app;
+        app.list_sel = 1;
+        app.load_selected();
+        assert_eq!(app.loaded_doc, Some(1));
+        let plain2: String = app
+            .body
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(plain2.contains("Second chapter body"), "{plain2}");
     }
 }

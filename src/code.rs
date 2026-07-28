@@ -42,20 +42,30 @@ fn escape_html(s: &str) -> String {
 pub fn highlight_body(path: &Path, text: &str) -> String {
     let ss = &*SYNTAXES;
     let theme = theme();
-    let syntax = path
+    let ext_owned = path
         .extension()
         .and_then(|e| e.to_str())
+        .map(|ext| {
+            let lower = ext.to_ascii_lowercase();
+            match lower.as_str() {
+                "yml" => "yaml".to_string(),
+                _ => lower,
+            }
+        });
+    let syntax = ext_owned
+        .as_deref()
         .and_then(|ext| ss.find_syntax_by_extension(ext))
         .or_else(|| {
             path.file_name()
                 .and_then(|n| n.to_str())
                 .and_then(|n| ss.find_syntax_by_extension(n))
         })
+        .or_else(|| ss.find_syntax_by_first_line(text.lines().next().unwrap_or("")))
         .unwrap_or_else(|| ss.find_syntax_plain_text());
 
     let mut highlighter = HighlightLines::new(syntax, theme);
-    // ponytail: class-per-RGB — host CSS only indexes single .class keys
-    let mut colors: BTreeMap<(u8, u8, u8), ()> = BTreeMap::new();
+    // class encodes RGB + bold/italic so host CSS can apply font-weight/style
+    let mut styles: BTreeMap<(u8, u8, u8, bool, bool), ()> = BTreeMap::new();
     let mut html = String::with_capacity(text.len().saturating_mul(2));
 
     for line in LinesWithEndings::from(text) {
@@ -69,8 +79,21 @@ pub fn highlight_body(path: &Path, text: &str) -> String {
                 continue;
             }
             let fg = style.foreground;
-            colors.insert((fg.r, fg.g, fg.b), ());
-            let class = format!("c{:02x}{:02x}{:02x}", fg.r, fg.g, fg.b);
+            let bold = style
+                .font_style
+                .contains(syntect::highlighting::FontStyle::BOLD);
+            let italic = style
+                .font_style
+                .contains(syntect::highlighting::FontStyle::ITALIC);
+            styles.insert((fg.r, fg.g, fg.b, bold, italic), ());
+            let class = format!(
+                "c{:02x}{:02x}{:02x}{}{}",
+                fg.r,
+                fg.g,
+                fg.b,
+                if bold { "b" } else { "" },
+                if italic { "i" } else { "" }
+            );
             html.push_str("<span class=\"");
             html.push_str(&class);
             html.push_str("\">");
@@ -80,10 +103,19 @@ pub fn highlight_body(path: &Path, text: &str) -> String {
         html.push_str("<br>");
     }
 
-    let mut css = String::with_capacity(colors.len() * 32);
-    for (r, g, b) in colors.keys() {
+    let mut css = String::with_capacity(styles.len() * 48);
+    for (r, g, b, bold, italic) in styles.keys() {
+        let mut decl = format!("color:#{r:02x}{g:02x}{b:02x}");
+        if *bold {
+            decl.push_str(";font-weight:bold");
+        }
+        if *italic {
+            decl.push_str(";font-style:italic");
+        }
         css.push_str(&format!(
-            ".c{r:02x}{g:02x}{b:02x}{{color:#{r:02x}{g:02x}{b:02x}}}\n"
+            ".c{r:02x}{g:02x}{b:02x}{}{}{{{decl}}}\n",
+            if *bold { "b" } else { "" },
+            if *italic { "i" } else { "" },
         ));
     }
     format!("{BODY_HTML_V1_PREFIX}{css}\n\u{1e}\n{html}")
@@ -104,6 +136,18 @@ mod tests {
         assert!(out.contains("<br>"));
         assert!(out.contains("fn"));
         assert!(!out.contains("<fn"));
+    }
+
+    #[test]
+    fn yml_and_toml_not_plain() {
+        let yml = "key: value\nlist:\n  - a\n";
+        let out = highlight_body(Path::new("c.yml"), yml);
+        assert!(out.starts_with(BODY_HTML_V1_PREFIX), "yml should highlight");
+        assert!(out.contains("<span class=\"c"), "{out}");
+        let toml = "[pkg]\nname = \"x\"\n";
+        let out = highlight_body(Path::new("Cargo.toml"), toml);
+        assert!(out.starts_with(BODY_HTML_V1_PREFIX), "toml should highlight");
+        assert!(out.contains("<span class=\"c"), "{out}");
     }
 
     #[test]

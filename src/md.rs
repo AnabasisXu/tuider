@@ -821,8 +821,18 @@ pub(crate) fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Line<'s
     let mut lines = Vec::new();
     let mut line: Vec<(char, Style)> = Vec::new();
     let mut col = 0usize;
-    // index into `line` after last whitespace (exclusive end of kept prefix on break)
+    // index into `line` after last break opportunity
     let mut break_end: Option<usize> = None;
+    // start of current ASCII word in `line` (for mid-word hard-cut avoidance)
+    let mut ascii_word_start: Option<usize> = None;
+
+    fn is_cjk(ch: char) -> bool {
+        // ponytail: width-2 non-ascii ≈ CJK/fullwidth for break opportunities
+        !ch.is_ascii() && UnicodeWidthStr::width(ch.to_string().as_str()) >= 2
+    }
+    fn is_ascii_word(ch: char) -> bool {
+        ch.is_ascii_alphanumeric() || ch == '_' || ch == '\''
+    }
 
     for &(ch, st) in &chars {
         let cw = width_of(ch);
@@ -833,12 +843,17 @@ pub(crate) fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Line<'s
                     left.pop();
                 }
                 emit_line(&left, &mut lines);
-                // rest after break whitespace
                 let mut rest: Vec<(char, Style)> = line[be..]
                     .iter()
                     .copied()
                     .skip_while(|(c, _)| c.is_whitespace())
                     .collect();
+                rest.push((ch, st));
+                line = rest;
+            } else if let Some(ws) = ascii_word_start.filter(|&ws| ws > 0) {
+                // break before current ASCII word instead of mid-word
+                emit_line(&line[..ws], &mut lines);
+                let mut rest = line[ws..].to_vec();
                 rest.push((ch, st));
                 line = rest;
             } else {
@@ -847,17 +862,33 @@ pub(crate) fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Line<'s
             }
             col = line.iter().map(|(c, _)| width_of(*c)).sum();
             break_end = None;
+            ascii_word_start = None;
             for (i, (c, _)) in line.iter().enumerate() {
-                if c.is_whitespace() {
+                if c.is_whitespace() || is_cjk(*c) {
                     break_end = Some(i + 1);
+                    ascii_word_start = None;
+                } else if is_ascii_word(*c) {
+                    if ascii_word_start.is_none() {
+                        ascii_word_start = Some(i);
+                    }
+                } else {
+                    ascii_word_start = None;
                 }
             }
             continue;
         }
+        let idx = line.len();
         line.push((ch, st));
         col += cw;
-        if ch.is_whitespace() {
+        if ch.is_whitespace() || is_cjk(ch) {
             break_end = Some(line.len());
+            ascii_word_start = None;
+        } else if is_ascii_word(ch) {
+            if ascii_word_start.is_none() {
+                ascii_word_start = Some(idx);
+            }
+        } else {
+            ascii_word_start = None;
         }
     }
     if !line.is_empty() {
@@ -886,6 +917,23 @@ mod tests {
         // first line should end at a word boundary
         let joined = texts.join("|");
         assert!(!joined.contains("beautifu|l"), "mid-word split: {joined}");
+        assert!(texts.len() >= 2, "{texts:?}");
+    }
+
+    #[test]
+    fn wrap_prefers_cjk_break_over_ascii_midword() {
+        // CJK then long english without space: break after CJK, not mid "beautiful"
+        let s = format!("中文{}", "beautiful");
+        let lines = wrap_spans(vec![Span::raw(s)], 8);
+        let texts: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        let joined = texts.join("|");
+        assert!(
+            !joined.contains("beauti|ful") && !joined.contains("bea|utiful"),
+            "mid-ascii split: {joined}"
+        );
         assert!(texts.len() >= 2, "{texts:?}");
     }
 

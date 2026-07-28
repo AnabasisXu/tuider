@@ -77,6 +77,11 @@ pub trait ContentSource: Send {
     fn select_dict(&mut self, _index: usize) -> bool {
         false
     }
+    /// Fulltext search: returns headwords matching query (headword + definition).
+    /// Empty vec = not supported or no matches.
+    fn fulltext_search(&mut self, _query: &str, _limit: usize) -> Vec<String> {
+        Vec::new()
+    }
     /// Plain-ish body for clipboard / AI (no ANSI).
     fn plain_body(&mut self, index: usize) -> String {
         let r = self.load(index, 100);

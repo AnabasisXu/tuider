@@ -20,6 +20,7 @@ type FnDictSearch = tuider_plugin_api::FnDictSearch;
 type FnDictReverse = tuider_plugin_api::FnDictReverse;
 type FnDictList = tuider_plugin_api::FnDictList;
 type FnDictSelect = tuider_plugin_api::FnDictSelect;
+type FnDictFulltextSearch = tuider_plugin_api::FnDictFulltextSearch;
 
 
 pub struct LoadedPlugin {
@@ -43,6 +44,7 @@ pub struct LoadedPlugin {
     dict_reverse: Option<FnDictReverse>,
     dict_list: Option<FnDictList>,
     dict_select: Option<FnDictSelect>,
+    dict_fulltext_search: Option<FnDictFulltextSearch>,
 }
 
 
@@ -196,6 +198,22 @@ impl DynSource {
             .unwrap_or_default()
     }
 
+    fn dict_fulltext_search(&mut self, query: &str, limit: usize) -> Vec<String> {
+        let Some(f) = self.plugin.dict_fulltext_search else {
+            return Vec::new();
+        };
+        let Ok(c) = CString::new(query.replace('\0', "")) else {
+            return Vec::new();
+        };
+        let raw = unsafe { f(self.handle, c.as_ptr(), limit) };
+        if raw.is_null() {
+            return Vec::new();
+        }
+        let s = unsafe { CStr::from_ptr(raw) }.to_string_lossy().into_owned();
+        unsafe { (self.plugin.string_free)(raw) };
+        s.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect()
+    }
+
     fn dict_list(&self) -> Vec<String> {
         let Some(f) = self.plugin.dict_list else {
             return Vec::new();
@@ -307,6 +325,9 @@ impl crate::plugin::ContentSource for HostSource {
     }
     fn reverse_lookup(&mut self, query: &str, limit: usize) -> Vec<String> {
         self.inner.dict_reverse(query, limit)
+    }
+    fn fulltext_search(&mut self, query: &str, limit: usize) -> Vec<String> {
+        self.inner.dict_fulltext_search(query, limit)
     }
     fn list_dicts(&self) -> Vec<String> {
         self.inner.dict_list()
@@ -627,9 +648,9 @@ mod body_render_tests {
 
     #[test]
     fn status_trailer_stripped() {
-        let (b, h) = split_status_trailer("hello\n\u{1f}STATUS:a 抓取全文");
+        let (b, h) = split_status_trailer("hello\n\u{1f}STATUS:a fetch article");
         assert_eq!(b, "hello");
-        assert_eq!(h, Some("a 抓取全文"));
+        assert_eq!(h, Some("a fetch article"));
         let (b2, h2) = split_status_trailer("plain");
         assert_eq!(b2, "plain");
         assert!(h2.is_none());
@@ -677,6 +698,77 @@ mod body_render_tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert!(t0.contains("1)"), "jump target: {t0}");
+    }
+
+    #[test]
+    fn epub_plugin_dlopen_and_render() {
+        use crate::plugin::ContentSource;
+        use std::path::PathBuf;
+
+        let so = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/debug/libtuider_epub.so");
+        if !so.is_file() {
+            eprintln!("skip: build libtuider_epub.so first ({})", so.display());
+            return;
+        }
+        let dir = so.parent().unwrap();
+        let reg = super::PluginRegistry::load(dir);
+        let plug = reg
+            .get("epub")
+            .expect("epub plugin should load from target/debug");
+        assert!(plug.handles_args(&["book.epub".into()]));
+        assert!(!plug.handles_args(&["README.md".into()]));
+
+        let book = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("crates/tuider-plugin-epub/tests/fixtures/sample2.epub");
+        assert!(book.is_file(), "{}", book.display());
+        let mut src = plug
+            .open_from_args(&[book.to_string_lossy().into_owned()])
+            .expect("open sample2");
+        assert_eq!(src.title(), "Smoke Book");
+        assert_eq!(src.entries(), &["One".to_string(), "Two".to_string()]);
+
+        let r0 = src.load(0, 72);
+        let plain0: String = r0
+            .lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            plain0.contains("Hello from chapter one"),
+            "body0={plain0:?} status={}",
+            r0.status
+        );
+        assert!(
+            plain0.contains("Chapter One") || plain0.contains("One"),
+            "{plain0}"
+        );
+        // md headings → outline
+        assert!(
+            !r0.headings.is_empty() || plain0.contains('#'),
+            "expected structured md render headings={:?}",
+            r0.headings
+        );
+
+        let r1 = src.load(1, 72);
+        let plain1: String = r1
+            .lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(plain1.contains("Second chapter body"), "{plain1}");
     }
 }
 
@@ -783,6 +875,10 @@ fn load_one(path: &Path) -> Result<LoadedPlugin, String> {
                 .map(|s| *s),
             dict_select: lib
                 .get::<FnDictSelect>(b"tuider_dict_select\0")
+                .ok()
+                .map(|s| *s),
+            dict_fulltext_search: lib
+                .get::<FnDictFulltextSearch>(b"tuider_dict_fulltext_search\0")
                 .ok()
                 .map(|s| *s),
             _lib: lib,
