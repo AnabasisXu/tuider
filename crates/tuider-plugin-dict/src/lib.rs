@@ -24,6 +24,14 @@ struct OneDict {
     /// Merged sibling `.css` next to the .mdx (mdx-tui method).
     css: String,
     path: PathBuf,
+    /// Lazy: lowercased headword + plain definition, parallel to `names`.
+    ft_cache: Option<FulltextCache>,
+}
+
+/// Built once on first fulltext_search; avoids repeated MDX lookup + strip_tags.
+struct FulltextCache {
+    head_lowers: Vec<String>,
+    body_lowers: Vec<String>,
 }
 
 struct DictState {
@@ -152,6 +160,7 @@ fn open_one(path: &Path) -> Result<OneDict, String> {
         file,
         css,
         path: path.to_path_buf(),
+        ft_cache: None,
     })
 }
 
@@ -200,6 +209,7 @@ fn apply_search(state: &mut DictState, q: &str) -> Result<(), String> {
             state.active = di;
             let key = state.dicts[di].names.remove(ki);
             state.dicts[di].names.insert(0, key.clone());
+            state.dicts[di].ft_cache = None; // names reordered
             eprintln!("dict: -s `{q}` → {} / {}", state.dicts[di].title, key);
             return Ok(());
         }
@@ -236,6 +246,7 @@ fn parse_comma_words(raw: &str) -> Vec<String> {
 fn apply_wordlist_filter(state: &mut DictState, wl: &HashSet<String>) {
     for d in &mut state.dicts {
         d.names.retain(|n| wl.contains(n));
+        d.ft_cache = None; // names order/set changed
     }
 }
 
@@ -760,43 +771,100 @@ pub unsafe extern "C" fn tuider_dict_fulltext_search(
     let q = unsafe { std::ffi::CStr::from_ptr(query) }
         .to_string_lossy()
         .to_lowercase();
-    if q.is_empty() {
+    let tokens: Vec<&str> = q
+        .split_whitespace()
+        .filter(|t| !t.is_empty())
+        .collect();
+    if tokens.is_empty() {
         return cstring_or_null("");
     }
     let lim = if limit == 0 { 500 } else { limit };
+    ensure_fulltext_caches(&mut s.dicts);
+    let out = search_fulltext_cached(&s.dicts, &tokens, lim);
+    cstring_or_null(&out.join("\n"))
+}
+
+fn ensure_fulltext_caches(dicts: &mut [OneDict]) {
+    for d in dicts {
+        if d.ft_cache.is_some() {
+            continue;
+        }
+        let mut head_lowers = Vec::with_capacity(d.names.len());
+        let mut body_lowers = Vec::with_capacity(d.names.len());
+        for name in &d.names {
+            head_lowers.push(name.to_lowercase());
+            let body = match d.file.lookup(name) {
+                Ok(Some(rec)) => strip_tags_light(&rec.text).to_lowercase(),
+                _ => String::new(),
+            };
+            body_lowers.push(body);
+        }
+        d.ft_cache = Some(FulltextCache {
+            head_lowers,
+            body_lowers,
+        });
+    }
+}
+
+/// Headword hits first, then definition-only; token AND on lowercased text.
+fn search_fulltext_cached(dicts: &[OneDict], tokens: &[&str], lim: usize) -> Vec<String> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
-    // 1) headword substring match (cheap)
-    for d in &s.dicts {
-        for name in &d.names {
-            if name.to_lowercase().contains(&q) && seen.insert(name.clone()) {
-                out.push(name.clone());
-                if out.len() >= lim {
-                    return cstring_or_null(&out.join("\n"));
-                }
-            }
+    for d in dicts {
+        let Some(cache) = &d.ft_cache else {
+            continue;
+        };
+        append_fulltext_hits(
+            &d.names,
+            &cache.head_lowers,
+            &cache.body_lowers,
+            tokens,
+            lim,
+            &mut out,
+            &mut seen,
+        );
+        if out.len() >= lim {
+            break;
         }
     }
-    // 2) definition search (expensive — only if query not found in headwords)
-    for d in &s.dicts {
-        for name in &d.names {
-            if seen.contains(name) {
-                continue;
-            }
-            let Ok(Some(rec)) = d.file.lookup(name) else {
-                continue;
-            };
-            let plain = strip_tags_light(&rec.text).to_lowercase();
-            if plain.contains(&q) {
-                seen.insert(name.clone());
-                out.push(name.clone());
-                if out.len() >= lim {
-                    return cstring_or_null(&out.join("\n"));
-                }
-            }
+    out
+}
+
+fn append_fulltext_hits(
+    names: &[String],
+    head_lowers: &[String],
+    body_lowers: &[String],
+    tokens: &[&str],
+    lim: usize,
+    out: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+) {
+    // 1) all tokens in headword
+    for (i, hw) in head_lowers.iter().enumerate() {
+        if out.len() >= lim {
+            return;
+        }
+        if tokens.iter().all(|t| hw.contains(t)) && seen.insert(names[i].clone()) {
+            out.push(names[i].clone());
         }
     }
-    cstring_or_null(&out.join("\n"))
+    // 2) each token in head OR body (same as host corpus)
+    for (i, body) in body_lowers.iter().enumerate() {
+        if out.len() >= lim {
+            return;
+        }
+        if seen.contains(&names[i]) {
+            continue;
+        }
+        let hw = head_lowers.get(i).map(|s| s.as_str()).unwrap_or("");
+        if tokens
+            .iter()
+            .all(|t| hw.contains(t) || body.contains(t))
+        {
+            seen.insert(names[i].clone());
+            out.push(names[i].clone());
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -886,5 +954,121 @@ mod tests {
         let wl: HashSet<String> = ["a".into()].into_iter().collect();
         apply_wordlist_filter(&mut st, &wl);
         assert!(st.dicts.is_empty());
+    }
+
+    #[test]
+    fn fulltext_token_and_prefers_headword() {
+        let names = vec!["apple".into(), "banana".into(), "cherry pie".into()];
+        let heads = vec!["apple".into(), "banana".into(), "cherry pie".into()];
+        let bodies = vec![
+            "a fruit red".into(),
+            "yellow fruit banana peel".into(),
+            "dessert with cream".into(),
+        ];
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        append_fulltext_hits(
+            &names,
+            &heads,
+            &bodies,
+            &["fruit"],
+            10,
+            &mut out,
+            &mut seen,
+        );
+        assert_eq!(out, vec!["apple", "banana"]);
+
+        out.clear();
+        seen.clear();
+        append_fulltext_hits(
+            &names,
+            &heads,
+            &bodies,
+            &["cherry", "pie"],
+            10,
+            &mut out,
+            &mut seen,
+        );
+        assert_eq!(out, vec!["cherry pie"]);
+
+        out.clear();
+        seen.clear();
+        append_fulltext_hits(
+            &names,
+            &heads,
+            &bodies,
+            &["banana", "peel"],
+            10,
+            &mut out,
+            &mut seen,
+        );
+        // head has banana, body has peel → cross-field OR
+        assert_eq!(out, vec!["banana"]);
+
+        out.clear();
+        seen.clear();
+        append_fulltext_hits(
+            &names,
+            &heads,
+            &bodies,
+            &["cherry", "cream"],
+            10,
+            &mut out,
+            &mut seen,
+        );
+        assert_eq!(out, vec!["cherry pie"]);
+    }
+
+    #[test]
+    fn real_mdx_fulltext_cache_speeds_second_query() {
+        let path = PathBuf::from(
+            "/root/dict/英语常用词疑难用法手册/英语常用词疑难用法手册.mdx",
+        );
+        if !path.exists() {
+            return;
+        }
+        let mut st = open_all(&[path], None).expect("open mdx");
+        let n = st.dicts[0].names.len();
+        assert!(n > 100, "expected real dict size, got {n}");
+
+        let t0 = std::time::Instant::now();
+        ensure_fulltext_caches(&mut st.dicts);
+        let build = t0.elapsed();
+
+        let t1 = std::time::Instant::now();
+        let hits1 = search_fulltext_cached(&st.dicts, &["make"], 50);
+        let q1 = t1.elapsed();
+
+        let t2 = std::time::Instant::now();
+        let hits2 = search_fulltext_cached(&st.dicts, &["take", "care"], 50);
+        let q2 = t2.elapsed();
+
+        assert!(!hits1.is_empty(), "make should hit");
+        assert!(
+            st.dicts[0].ft_cache.is_some(),
+            "cache must stay after search"
+        );
+        eprintln!(
+            "real mdx n={n} build={build:?} q_make={q1:?} hits={} q_take_care={q2:?} hits={}",
+            hits1.len(),
+            hits2.len()
+        );
+        // second query must be pure memory scan — well under a second for this book size
+        assert!(
+            q1.as_millis() < 500 && q2.as_millis() < 500,
+            "cached queries too slow: {q1:?} {q2:?}"
+        );
+        let _ = hits2;
+    }
+
+    #[test]
+    fn fulltext_respects_limit() {
+        let names: Vec<String> = (0..20).map(|i| format!("w{i}")).collect();
+        let heads: Vec<String> = names.iter().map(|s| s.to_lowercase()).collect();
+        let bodies: Vec<String> = names.iter().map(|_| "hit me".into()).collect();
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        append_fulltext_hits(&names, &heads, &bodies, &["hit"], 5, &mut out, &mut seen);
+        assert_eq!(out.len(), 5);
     }
 }
