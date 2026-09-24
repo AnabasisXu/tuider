@@ -2,7 +2,7 @@
 
 目录：`~/cleantest/tuider`  
 日期：2026-07-26  
-相关：[`testing.md`](testing.md) · [`STATUS.md`](STATUS.md) · [`FEATURES.md`](FEATURES.md) · CI [`.github/workflows/test.yml`](../.github/workflows/test.yml)
+相关：[`testing.md`](testing.md) · [`STATUS.md`](STATUS.md) · [`FEATURES.md`](FEATURES.md) · 本文 L3 的 agent 工作期实现：[`tui-herdr-testing.md`](tui-herdr-testing.md) · CI [`.github/workflows/test.yml`](../.github/workflows/test.yml)
 
 本文说明**如何把目前偏手动的 TUI 验收，收敛成可 CI 的自动化**。  
 环境隔离、插件 / ABI / 缓存等通用约定见 [`testing.md`](testing.md)；本文只谈 **UI 层**。

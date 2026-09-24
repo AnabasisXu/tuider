@@ -57,7 +57,6 @@ pub fn find_avy_hits(body: &[Line<'static>], query: &str) -> Vec<MatchHit> {
     out
 }
 
-
 pub fn find_hits(body: &[Line<'static>], query: &str) -> Vec<MatchHit> {
     // ponytail: whitespace tokens → each token's real substrings (orderless)
     let tokens: Vec<Vec<char>> = query
@@ -232,7 +231,10 @@ impl App {
     }
 
     pub fn avy_label_buf(&self) -> &str {
-        self.avy.as_ref().map(|a| a.label_buf.as_str()).unwrap_or("")
+        self.avy
+            .as_ref()
+            .map(|a| a.label_buf.as_str())
+            .unwrap_or("")
     }
 
     pub(crate) fn start_avy(&mut self) {
@@ -375,7 +377,10 @@ impl App {
         if let Some(a) = self.avy.as_mut() {
             a.label_buf.clear();
             a.labels = Some(labels);
-            self.status = format!("zz {} hits /{q} — type label", a.labels.as_ref().map(|v| v.len()).unwrap_or(0));
+            self.status = format!(
+                "zz {} hits /{q} — type label",
+                a.labels.as_ref().map(|v| v.len()).unwrap_or(0)
+            );
         }
     }
 

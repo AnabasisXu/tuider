@@ -18,6 +18,14 @@ pub struct HeadingEntry {
     pub line: usize,
 }
 
+/// 渲染结果：行 + 链接索引 + 标题索引（f / o 跳转数据，md/org/html 共用）。
+#[derive(Default)]
+pub struct RenderedDoc {
+    pub lines: Vec<Line<'static>>,
+    pub links: Vec<LinkEntry>,
+    pub headings: Vec<HeadingEntry>,
+}
+
 pub struct LoadResult {
     pub lines: Vec<Line<'static>>,
     pub status: String,

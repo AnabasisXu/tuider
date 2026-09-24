@@ -278,7 +278,8 @@ impl<'a> Renderer<'a> {
         // Emit ::before content before entering the element (unless skipped).
         if !skipped
             && self.skip == 0
-            && let Some(prefix) = &resolved.prefix {
+            && let Some(prefix) = &resolved.prefix
+        {
             self.buf.push_str(prefix);
         }
 
@@ -287,7 +288,16 @@ impl<'a> Renderer<'a> {
         let block = resolved.style.block
             || matches!(
                 name,
-                "p" | "div" | "h1" | "h2" | "h3" | "li" | "ul" | "ol" | "table" | "tr" | "thead"
+                "p" | "div"
+                    | "h1"
+                    | "h2"
+                    | "h3"
+                    | "li"
+                    | "ul"
+                    | "ol"
+                    | "table"
+                    | "tr"
+                    | "thead"
                     | "tbody"
             );
         if !skipped && self.skip == 0 && block {
@@ -305,8 +315,7 @@ impl<'a> Renderer<'a> {
 
         // Built-in emphasis (used only when no CSS rule speaks to this element).
         let heading = matches!(name, "h1" | "h2" | "h3" | "h4" | "h5" | "h6");
-        let bold = matches!(name, "b" | "strong")
-            || class_refs.iter().any(|c| c.contains("bold"));
+        let bold = matches!(name, "b" | "strong") || class_refs.iter().any(|c| c.contains("bold"));
         let italic = matches!(name, "i" | "em");
         let underline = name == "u" || class_refs.iter().any(|c| c.contains("underline"));
 
@@ -430,7 +439,10 @@ impl<'a> Renderer<'a> {
         if block {
             self.break_line();
         }
-        if matches!(name, "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol" | "table") {
+        if matches!(
+            name,
+            "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol" | "table"
+        ) {
             self.blank();
         }
     }
@@ -478,7 +490,9 @@ impl<'a> Renderer<'a> {
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD | Modifier::ITALIC)
         } else if bold {
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
         } else if italic {
             // 斜体 = 例句，黄色
             Style::default()
@@ -625,9 +639,7 @@ fn decode_entity(entity: &str) -> Option<char> {
                 .ok()
                 .and_then(char::from_u32)
         }
-        _ if entity.starts_with('#') => {
-            entity[1..].parse::<u32>().ok().and_then(char::from_u32)
-        }
+        _ if entity.starts_with('#') => entity[1..].parse::<u32>().ok().and_then(char::from_u32),
         _ => None,
     }
 }
@@ -652,8 +664,14 @@ mod tests {
             &StyleTable::default(),
         );
         assert!(!lines.is_empty());
-        assert!(hs.iter().any(|h| h.text == "Word" && h.level == 1), "{hs:?}");
-        assert!(hs.iter().any(|h| h.text == "Sense" && h.level == 2), "{hs:?}");
+        assert!(
+            hs.iter().any(|h| h.text == "Word" && h.level == 1),
+            "{hs:?}"
+        );
+        assert!(
+            hs.iter().any(|h| h.text == "Sense" && h.level == 2),
+            "{hs:?}"
+        );
     }
 
     #[test]
@@ -669,11 +687,13 @@ mod tests {
         "#;
         let (_lines, hs) = super::html_to_doc(html, &StyleTable::default());
         assert!(
-            hs.iter().any(|h| h.text.contains("VERB") || h.text.contains("动词")),
+            hs.iter()
+                .any(|h| h.text.contains("VERB") || h.text.contains("动词")),
             "pos missing: {hs:?}"
         );
         assert!(
-            hs.iter().any(|h| h.text.contains("放") || h.text.contains("设定")),
+            hs.iter()
+                .any(|h| h.text.contains("放") || h.text.contains("设定")),
             "df/se2 missing: {hs:?}"
         );
     }
@@ -902,7 +922,9 @@ mod tests {
         let lines = super::html_to_lines(r#"<span class="src">quoted</span>"#, &t);
         assert_eq!(first(&lines).content, "quoted");
         // #1E90FF (luma 122) is just below the floor → lifted; blue stays dominant.
-        let Some(Color::Rgb(r, g, b)) = first(&lines).style.fg else { panic!("expected rgb") };
+        let Some(Color::Rgb(r, g, b)) = first(&lines).style.fg else {
+            panic!("expected rgb")
+        };
         assert!(b > g && g > r, "hue not preserved: {r},{g},{b}");
         assert!(first(&lines).style.add_modifier.contains(Modifier::ITALIC));
     }
@@ -964,12 +986,8 @@ mod tests {
     #[test]
     fn css_display_block_breaks_line() {
         let t = table("span.ch { display: block; color: #696969; }");
-        let lines =
-            super::html_to_lines(r#"a<span class="ch">translation</span>b"#, &t);
+        let lines = super::html_to_lines(r#"a<span class="ch">translation</span>b"#, &t);
         // The block span forces its content onto its own line.
         assert!(lines.len() >= 2);
     }
-
-
-
 }

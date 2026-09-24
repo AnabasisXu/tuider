@@ -4,16 +4,14 @@
 //! `--sync` refreshes top/items from network. Enter → meta + comments.
 //! `a` / action "article" → fetch linked article body.
 
-use std::os::raw::{c_char, c_int, c_void};
 use std::ffi::CStr;
+use std::os::raw::{c_char, c_int, c_void};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use readable_readability::Readability;
 use serde::{Deserialize, Serialize};
-use tuider_plugin_api::{
-    args_vec, cstring_or_null, free_cstring, write_err, TUIDER_PLUGIN_ABI,
-};
+use tuider_plugin_api::{TUIDER_PLUGIN_ABI, args_vec, cstring_or_null, free_cstring, write_err};
 use url::Url;
 
 const HN_BASE: &str = "https://hacker-news.firebaseio.com/v0";
@@ -22,7 +20,6 @@ const TTL_TOP: Duration = Duration::from_secs(15 * 60);
 const TTL_ITEM: Duration = Duration::from_secs(6 * 60 * 60);
 const TTL_PAGE: Duration = Duration::from_secs(24 * 60 * 60);
 // ponytail: open-time article prefetch removed; `a` / --sync list refresh only
-
 
 #[derive(Clone, Deserialize, Serialize)]
 struct HnItem {
@@ -60,14 +57,12 @@ struct Story {
     last_action_note: Option<String>,
 }
 
-
 struct HnState {
     entries: Vec<String>,
     stories: Vec<Story>,
     /// false: open/list from disk cache only; true: network ok (`--sync`).
     allow_net: bool,
 }
-
 
 #[unsafe(no_mangle)]
 pub extern "C" fn tuider_plugin_abi_version() -> u32 {
@@ -132,11 +127,17 @@ pub unsafe extern "C" fn tuider_plugin_open(
                 eprintln!("hn: {} stories", state.entries.len());
             } else if allow_net {
                 // snappy Enter after explicit refresh
-                eprintln!("hn: prefetch {} stories (meta+comments)…", state.stories.len());
+                eprintln!(
+                    "hn: prefetch {} stories (meta+comments)…",
+                    state.stories.len()
+                );
                 prefetch_story_bodies(&mut state);
                 eprintln!("hn: ready");
             } else {
-                eprintln!("hn: cache {} stories (no net; --sync to refresh)", state.stories.len());
+                eprintln!(
+                    "hn: cache {} stories (no net; --sync to refresh)",
+                    state.stories.len()
+                );
             }
             Box::into_raw(Box::new(state)) as *mut c_void
         }
@@ -145,9 +146,7 @@ pub unsafe extern "C" fn tuider_plugin_open(
             std::ptr::null_mut()
         }
     }
-
 }
-
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tuider_plugin_close(src: *mut c_void) {
@@ -212,9 +211,7 @@ pub unsafe extern "C" fn tuider_source_load_body(
     } else {
         cstring_or_null(body)
     }
-
 }
-
 
 /// Optional host action. `article` → next load_body includes linked page.
 #[unsafe(no_mangle)]
@@ -255,9 +252,7 @@ pub unsafe extern "C" fn tuider_source_action(
         story.url.as_deref().unwrap_or("?")
     ));
     1
-
 }
-
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tuider_string_free(s: *mut c_char) {
@@ -388,7 +383,6 @@ fn fetch_top_once(limit: usize, list_only: bool, allow_net: bool) -> Result<HnSt
                 && std::env::var("TUIDER_HN_FETCH_ARTICLE").as_deref() == Ok("1"),
             last_action_note: None,
         });
-
     }
     if entries.is_empty() {
         return Err(if allow_net {
@@ -432,24 +426,32 @@ fn load_item_cached(client: &reqwest::blocking::Client, id: u64) -> Option<HnIte
 
 /// Parallel fill `body_base` (+ `body` without article) using disk cache when comments match.
 fn prefetch_story_bodies(state: &mut HnState) {
-    let snapshots: Vec<(usize, u64, u32, String, Option<String>, i64, String, Option<Vec<u64>>)> =
-        state
-            .stories
-            .iter()
-            .enumerate()
-            .map(|(i, s)| {
-                (
-                    i,
-                    s.id,
-                    s.comments,
-                    s.title.clone(),
-                    s.url.clone(),
-                    s.score,
-                    s.by.clone(),
-                    s.kids.clone(),
-                )
-            })
-            .collect();
+    let snapshots: Vec<(
+        usize,
+        u64,
+        u32,
+        String,
+        Option<String>,
+        i64,
+        String,
+        Option<Vec<u64>>,
+    )> = state
+        .stories
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            (
+                i,
+                s.id,
+                s.comments,
+                s.title.clone(),
+                s.url.clone(),
+                s.score,
+                s.by.clone(),
+                s.kids.clone(),
+            )
+        })
+        .collect();
     let texts: Vec<Option<String>> = state.stories.iter().map(|s| s.text.clone()).collect();
 
     let handles: Vec<_> = snapshots
@@ -509,7 +511,6 @@ fn body_base_rel(id: u64) -> String {
 fn body_count_rel(id: u64) -> String {
     format!("hn/body/v2/{id}.comments")
 }
-
 
 /// Disk cache hit when present. Fresh TTL only when `allow_net` (build path nets).
 fn load_or_build_base(s: StorySnap, allow_net: bool) -> String {
@@ -622,7 +623,6 @@ fn compose_full_body(story: &mut Story, allow_net: bool) -> String {
     md
 }
 
-
 fn format_article_block(article_md: &str) -> String {
     // article_md already has structure from html_to_markdown; ensure top is # Article
     let t = article_md.trim();
@@ -636,12 +636,13 @@ fn format_article_block(article_md: &str) -> String {
     }
 }
 
-
-
 /// Host status bar hint when article not yet fetched.
 pub(crate) fn article_status_hint(story: &Story) -> Option<String> {
     if story.url.is_some() && !story.include_article {
-        Some(format!("a fetch article · {}", story.url.as_deref().unwrap_or("")))
+        Some(format!(
+            "a fetch article · {}",
+            story.url.as_deref().unwrap_or("")
+        ))
     } else if story.url.is_none() {
         Some("no external URL (discussion)".into())
     } else {
@@ -723,7 +724,6 @@ fn append_comments_body(md: &mut String, root_kids: &[u64], allow_net: bool) {
         level = next;
     }
 }
-
 
 fn fetch_article_markdown(url: &str) -> Result<String, String> {
     let rel = page_rel(url);
@@ -811,7 +811,6 @@ fn http_get(url: &str) -> Result<String, String> {
     resp.text().map_err(|e| e.to_string())
 }
 
-
 fn validate_fetch_url(url: &str) -> Result<Url, String> {
     let parsed = Url::parse(url).map_err(|e| e.to_string())?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
@@ -885,7 +884,6 @@ fn html_to_markdown(page_url: &str, html: &str) -> String {
         format!("# Article\n\n> source: {page_url}\n\n**{title}**\n\n{body}\n")
     }
 }
-
 
 fn body_has_md_heading(s: &str) -> bool {
     s.lines().any(|l| {
@@ -963,11 +961,7 @@ fn structured_text_from_html(html: &str) -> String {
 
 /// No headings: keep readable paragraphs (blank line every ~3 sentences-ish).
 fn soft_paragraphs(s: &str) -> String {
-    let lines: Vec<&str> = s
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect();
+    let lines: Vec<&str> = s.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
     if lines.is_empty() {
         return String::new();
     }
@@ -995,7 +989,6 @@ fn soft_paragraphs(s: &str) -> String {
     }
     out
 }
-
 
 fn strip_tags(s: &str) -> String {
     // drop whole script/style blocks first
@@ -1232,7 +1225,10 @@ mod tests {
             Err(e) => e,
             Ok(_) => panic!("expected cache miss"),
         };
-        assert!(err.contains("cache") || err.contains("--sync"), "got: {err}");
+        assert!(
+            err.contains("cache") || err.contains("--sync"),
+            "got: {err}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1269,7 +1265,6 @@ mod tests {
         assert!(validate_fetch_url("https://example.com/x").is_ok());
         assert!(validate_fetch_url("http://8.8.8.8/x").is_ok());
     }
-
 
     #[test]
     fn disk_cache_roundtrip_and_ttl() {

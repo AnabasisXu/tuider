@@ -1,0 +1,7 @@
+{
+  "enabledMcpjsonServers": [
+    "tavily",
+    "filesystem",
+    "fast-filesystem"
+  ]
+}

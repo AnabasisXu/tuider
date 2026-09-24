@@ -7,6 +7,7 @@ use ratatui::text::Line;
 
 use crate::code;
 use crate::md;
+use crate::org;
 use crate::plugin::{ContentSource, LoadResult};
 
 pub struct FileTreeSource {
@@ -89,6 +90,14 @@ impl ContentSource for FileTreeSource {
                 links: doc.links,
                 headings: doc.headings,
             }
+        } else if ext.eq_ignore_ascii_case("org") {
+            let doc = org::render_org_doc(&text, w);
+            LoadResult {
+                status: format!("{name}  ({} lines)", doc.lines.len()),
+                lines: doc.lines,
+                links: doc.links,
+                headings: doc.headings,
+            }
         } else if crate::scan::is_code_ext(ext) {
             let body = code::highlight_body(path, &text);
             let (lines, links, headings) = crate::loader::render_plugin_body_doc(&body, w);
@@ -129,5 +138,20 @@ mod tests {
         assert_eq!(src.entries().len(), 2);
         // second call is idempotent
         assert_eq!(src.ensure_local_doc(&status), Some(1));
+    }
+
+    #[test]
+    fn org_file_loads_with_headings() {
+        let dir = std::env::temp_dir().join(format!("tuider-org-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.org");
+        std::fs::write(&path, "* 一级\n** 二级\n").unwrap();
+        let mut s = FileTreeSource::new(vec![("a.org".into(), path)]);
+        let r = s.load(0, 80);
+        assert_eq!(r.headings.len(), 2);
+        assert_eq!(r.lines[0].to_string(), "* 一级");
+        assert_eq!(r.lines[1].to_string(), "  ** 二级");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

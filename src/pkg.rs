@@ -6,7 +6,7 @@ use std::process::{Command, ExitCode, Stdio};
 use crate::config;
 use crate::loader::PluginRegistry;
 
-use crate::plugin_catalog::{self, CatalogEntry, CATALOG};
+use crate::plugin_catalog::{self, CATALOG, CatalogEntry};
 
 pub use plugin_catalog::find;
 
@@ -82,11 +82,7 @@ DIR: set by plugins_dir / TUIDER_PLUGINS_DIR
 ENV: TUIDER_PKG_RELEASE=1 → cargo --release
 
 Requires building from the tuider source tree.",
-        CATALOG
-            .iter()
-            .map(|e| e.id)
-            .collect::<Vec<_>>()
-            .join(", ")
+        CATALOG.iter().map(|e| e.id).collect::<Vec<_>>().join(", ")
     );
 }
 
@@ -115,10 +111,7 @@ fn list(plugins_dir: &Path, registry: &PluginRegistry) {
         } else {
             "no"
         };
-        println!(
-            "{:<8} {:<10} {:<10} {}",
-            e.id, status, en, e.summary
-        );
+        println!("{:<8} {:<10} {:<10} {}", e.id, status, en, e.summary);
     }
     println!();
     println!("install: tuider pkg install <id|all>");

@@ -5,18 +5,18 @@
 //! `TUIDER_AI_KEY` / `OPENAI_API_KEY`, `TUIDER_AI_BASE_URL`, `TUIDER_AI_MODEL`.
 
 use std::io::{BufRead, BufReader, Read};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::sync::Arc;
 use std::thread;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::Frame;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use unicode_width::UnicodeWidthChar;
 
 use crate::theme::Theme;
@@ -48,8 +48,7 @@ impl AiConfig {
         }
         let base_url_raw = std::env::var("TUIDER_AI_BASE_URL")
             .unwrap_or_else(|_| "https://api.openai.com/v1".into());
-        let model =
-            std::env::var("TUIDER_AI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
+        let model = std::env::var("TUIDER_AI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
         let base_url = crate::config::validate_ai_base_url(&base_url_raw)?;
         Some(Self {
             name: "env".into(),
@@ -84,7 +83,6 @@ enum StreamEvent {
     },
 }
 
-
 pub struct AiSession {
     pub open: bool,
     /// Full-area AI pane (Alt+Shift+L).
@@ -109,7 +107,6 @@ pub struct AiSession {
     /// Visual `a` inject; empty = no block.
     pub(crate) selection_context: String,
 }
-
 
 impl Default for AiSession {
     fn default() -> Self {
@@ -225,14 +222,8 @@ impl AiSession {
         }
     }
 
-
-
     pub fn focus_label(&self) -> Option<&'static str> {
-        if self.open {
-            Some("ai")
-        } else {
-            None
-        }
+        if self.open { Some("ai") } else { None }
     }
 
     pub fn is_open(&self) -> bool {
@@ -272,13 +263,8 @@ impl AiSession {
                     reply,
                 }) => {
                     self.status = format!("AI tool: {name}…");
-                    let out = execute_tool(
-                        source,
-                        &name,
-                        &arguments,
-                        &self.doc_title,
-                        &self.full_body,
-                    );
+                    let out =
+                        execute_tool(source, &name, &arguments, &self.doc_title, &self.full_body);
                     log_tool(&name, &arguments, &out);
                     let _ = reply.send(out);
                 }
@@ -322,7 +308,6 @@ impl AiSession {
             self.rx = Some(rx);
         }
     }
-
 
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -389,20 +374,17 @@ impl AiSession {
                 self.cursor = self.input.len();
             }
             KeyCode::Char(c)
-                if key.modifiers == KeyModifiers::NONE
-                    || key.modifiers == KeyModifiers::SHIFT =>
+                if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT =>
             {
                 if !c.is_control() {
                     self.insert_at_cursor(c);
                 }
-
             }
             KeyCode::Up => self.scroll = self.scroll.saturating_sub(1),
             KeyCode::Down => self.scroll = self.scroll.saturating_add(1),
             KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(5),
             KeyCode::PageDown => self.scroll = self.scroll.saturating_add(5),
             _ => {}
-
         }
         false
     }
@@ -438,8 +420,7 @@ impl AiSession {
         self.cursor = next_char_boundary(&self.input, self.cursor);
     }
 
-    const TRANSLATE_FULL: &'static str =
-        "Please translate the current document into Chinese, keep paragraph structure; proper nouns may stay in original. If preview is truncated, call get_current_content first.";
+    const TRANSLATE_FULL: &'static str = "Please translate the current document into Chinese, keep paragraph structure; proper nouns may stay in original. If preview is truncated, call get_current_content first.";
 
     /// Alt+t: queue full-doc translate and send immediately.
     fn send_translate_full(&mut self) {
@@ -447,8 +428,6 @@ impl AiSession {
         self.cursor = self.input.len();
         self.send();
     }
-
-
 
     /// Handle `/exp` and `/switch` before network send. Returns true if consumed.
     fn try_slash_command(&mut self, text: &str) -> bool {
@@ -570,7 +549,11 @@ impl AiSession {
             system.push_str(", preview truncated");
         }
         system.push_str(")\n--- preview ---\n");
-        system.push_str(if preview.is_empty() { "(empty)" } else { &preview });
+        system.push_str(if preview.is_empty() {
+            "(empty)"
+        } else {
+            &preview
+        });
         system.push_str("\n--- end ---");
         if !self.selection_context.is_empty() {
             append_selection_block(&mut system, &self.selection_context);
@@ -612,7 +595,6 @@ impl AiSession {
         });
     }
 
-
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: Theme) {
         // multi-line input box grows a bit with content (cap 8 rows)
         let input_lines = self.input.chars().filter(|c| *c == '\n').count() + 1;
@@ -622,10 +604,7 @@ impl AiSession {
         let msg_area = chunks[0];
         let input_area = chunks[1];
 
-        let pname = self
-            .active_cfg()
-            .map(|c| c.name.as_str())
-            .unwrap_or("?");
+        let pname = self.active_cfg().map(|c| c.name.as_str()).unwrap_or("?");
         let title = if self.loading {
             format!(" AI [{pname}] streaming… Esc cancel ")
         } else if self.configured {
@@ -692,14 +671,10 @@ impl AiSession {
         }
         let scroll = self.scroll.min(max_scroll);
         // md is already width-aware; Paragraph wrap would double-wrap assistant bubbles
-        frame.render_widget(
-            Paragraph::new(lines).scroll((scroll, 0)),
-            inner,
-        );
+        frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
 
         let ib = Block::default()
             .title(" input · Enter send · C-j ↵ · A-t translate full doc ")
-
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border()));
         let iinner = ib.inner(input_area);
@@ -718,12 +693,15 @@ impl AiSession {
         );
         if !self.loading {
             let (cx, cy) = cursor_xy(&self.input, self.cursor, iinner.width.max(1) as usize);
-            let x = iinner.x.saturating_add(cx.min(iinner.width.saturating_sub(1)));
-            let y = iinner.y.saturating_add(cy.min(iinner.height.saturating_sub(1)));
+            let x = iinner
+                .x
+                .saturating_add(cx.min(iinner.width.saturating_sub(1)));
+            let y = iinner
+                .y
+                .saturating_add(cy.min(iinner.height.saturating_sub(1)));
             frame.set_cursor_position((x, y));
         }
     }
-
 }
 
 fn append_selection_block(system: &mut String, selection: &str) {
@@ -735,7 +713,6 @@ fn append_selection_block(system: &mut String, selection: &str) {
     system.push_str(&sel);
     system.push_str("\n--- end selection ---");
 }
-
 
 fn prev_char_boundary(s: &str, idx: usize) -> usize {
     if idx == 0 {
@@ -760,7 +737,10 @@ fn next_char_boundary(s: &str, idx: usize) -> usize {
 }
 
 fn line_start_byte(s: &str, cursor: usize) -> usize {
-    s[..cursor.min(s.len())].rfind('\n').map(|i| i + 1).unwrap_or(0)
+    s[..cursor.min(s.len())]
+        .rfind('\n')
+        .map(|i| i + 1)
+        .unwrap_or(0)
 }
 
 fn line_end_byte(s: &str, cursor: usize) -> usize {
@@ -811,7 +791,14 @@ fn export_chat(messages: &[Bubble], arg: &str) -> Result<String, String> {
     let selected: Vec<&Bubble> = if arg.is_empty() {
         messages.iter().collect()
     } else if arg == "last" {
-        messages.iter().rev().take(2).collect::<Vec<_>>().into_iter().rev().collect()
+        messages
+            .iter()
+            .rev()
+            .take(2)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
     } else if let Ok(n) = arg.parse::<usize>() {
         // 1-based user messages pair approx: take message n (clamp)
         let idx = n.saturating_sub(1).min(messages.len().saturating_sub(1));
@@ -847,7 +834,11 @@ fn log_tool(name: &str, args: &str, out: &str) {
         out.len()
     );
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         let _ = f.write_all(line.as_bytes());
     }
 }
@@ -979,9 +970,7 @@ fn execute_tool(
         }
         "get_current_content" => {
             let offset = args["offset"].as_u64().unwrap_or(0) as usize;
-            let limit = args["limit"]
-                .as_u64()
-                .unwrap_or(CONTENT_CHUNK_BYTES as u64) as usize;
+            let limit = args["limit"].as_u64().unwrap_or(CONTENT_CHUNK_BYTES as u64) as usize;
             let limit = limit.clamp(1, CONTENT_CHUNK_BYTES);
             if full_body.is_empty() {
                 return "(empty document)".into();
@@ -1148,18 +1137,14 @@ fn chat_with_tools_loop(
             }));
         }
     }
-    let _ = tx.send(StreamEvent::Chunk(
-        "(tool round limit reached)".into(),
-    ));
+    let _ = tx.send(StreamEvent::Chunk("(tool round limit reached)".into()));
     let _ = tx.send(StreamEvent::Done);
     Ok(())
 }
 
-
 /// Prefer streaming SSE; fall back to non-stream JSON if needed.
 #[allow(dead_code)] // kept as non-tool failover path
 fn chat_request(
-
     cfg: &AiConfig,
     system: &str,
     messages: &[(String, String)],
@@ -1326,7 +1311,12 @@ fn nonstream_chat(
     v.pointer("/choices/0/message/content")
         .and_then(|c| c.as_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("no content in response: {}", v.to_string().chars().take(200).collect::<String>()))
+        .ok_or_else(|| {
+            format!(
+                "no content in response: {}",
+                v.to_string().chars().take(200).collect::<String>()
+            )
+        })
 }
 
 #[cfg(test)]
@@ -1354,7 +1344,6 @@ mod tests {
             selection_context: String::new(),
         }
     }
-
 
     #[test]
     fn cursor_xy_wraps_and_newlines() {
@@ -1384,7 +1373,6 @@ mod tests {
         assert!(s.open);
     }
 
-
     #[test]
     fn enter_triggers_send_path() {
         let mut s = empty_session();
@@ -1412,7 +1400,11 @@ mod tests {
         let key = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT);
         s.handle_key(key);
         // no provider → status error; input was set then cleared by send path after slash? no provider leaves messages?
-        assert!(s.status.contains("no provider") || s.input.contains("translate") || !s.messages.is_empty());
+        assert!(
+            s.status.contains("no provider")
+                || s.input.contains("translate")
+                || !s.messages.is_empty()
+        );
     }
 
     #[test]
@@ -1476,5 +1468,4 @@ mod tests {
         append_selection_block(&mut s, "");
         assert_eq!(s, "base");
     }
-
 }

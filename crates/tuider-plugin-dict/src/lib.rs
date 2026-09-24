@@ -6,13 +6,13 @@ use std::io::Write;
 use std::os::raw::{c_char, c_int, c_void};
 use std::path::{Path, PathBuf};
 
-use flate2::write::ZlibEncoder;
 use flate2::Compression;
+use flate2::write::ZlibEncoder;
 use mdict_rs::MdxFile;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::Deserialize;
 use tuider_plugin_api::{
-    args_vec, cstring_or_null, free_cstring, write_err, BODY_HTML_V1_PREFIX, TUIDER_PLUGIN_ABI,
+    BODY_HTML_V1_PREFIX, TUIDER_PLUGIN_ABI, args_vec, cstring_or_null, free_cstring, write_err,
 };
 
 const SEP: &str = "\n\u{1e}\n";
@@ -127,9 +127,7 @@ fn load_sibling_css(mdx: &Path) -> String {
     let mut parts = Vec::new();
     for e in rd.flatten() {
         let p = e.path();
-        if p.extension()
-            .is_some_and(|x| x.eq_ignore_ascii_case("css"))
-        {
+        if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("css")) {
             if let Ok(s) = std::fs::read_to_string(&p) {
                 parts.push(s);
             }
@@ -285,15 +283,14 @@ fn resolve_paths(cli_paths: &[PathBuf], group: Option<&str>) -> Result<Vec<PathB
     }
     paths.retain(|p| p.exists());
     if paths.is_empty() {
-        return Err(
-            "dict: no .mdx files (pass path or -g <group> from tuider.yml groups)".into(),
-        );
+        return Err("dict: no .mdx files (pass path or -g <group> from tuider.yml groups)".into());
     }
     Ok(paths)
 }
 
 fn envelope(css: &str, html: &str) -> String {
-    let mut s = String::with_capacity(BODY_HTML_V1_PREFIX.len() + css.len() + SEP.len() + html.len());
+    let mut s =
+        String::with_capacity(BODY_HTML_V1_PREFIX.len() + css.len() + SEP.len() + html.len());
     s.push_str(BODY_HTML_V1_PREFIX);
     s.push_str(css);
     s.push_str(SEP);
@@ -771,10 +768,7 @@ pub unsafe extern "C" fn tuider_dict_fulltext_search(
     let q = unsafe { std::ffi::CStr::from_ptr(query) }
         .to_string_lossy()
         .to_lowercase();
-    let tokens: Vec<&str> = q
-        .split_whitespace()
-        .filter(|t| !t.is_empty())
-        .collect();
+    let tokens: Vec<&str> = q.split_whitespace().filter(|t| !t.is_empty()).collect();
     if tokens.is_empty() {
         return cstring_or_null("");
     }
@@ -857,10 +851,7 @@ fn append_fulltext_hits(
             continue;
         }
         let hw = head_lowers.get(i).map(|s| s.as_str()).unwrap_or("");
-        if tokens
-            .iter()
-            .all(|t| hw.contains(t) || body.contains(t))
-        {
+        if tokens.iter().all(|t| hw.contains(t) || body.contains(t)) {
             seen.insert(names[i].clone());
             out.push(names[i].clone());
         }
@@ -967,15 +958,7 @@ mod tests {
         ];
         let mut out = Vec::new();
         let mut seen = HashSet::new();
-        append_fulltext_hits(
-            &names,
-            &heads,
-            &bodies,
-            &["fruit"],
-            10,
-            &mut out,
-            &mut seen,
-        );
+        append_fulltext_hits(&names, &heads, &bodies, &["fruit"], 10, &mut out, &mut seen);
         assert_eq!(out, vec!["apple", "banana"]);
 
         out.clear();
@@ -1021,9 +1004,7 @@ mod tests {
 
     #[test]
     fn real_mdx_fulltext_cache_speeds_second_query() {
-        let path = PathBuf::from(
-            "/root/dict/英语常用词疑难用法手册/英语常用词疑难用法手册.mdx",
-        );
+        let path = PathBuf::from("/root/dict/英语常用词疑难用法手册/英语常用词疑难用法手册.mdx");
         if !path.exists() {
             return;
         }

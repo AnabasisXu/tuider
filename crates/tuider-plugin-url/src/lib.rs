@@ -4,9 +4,7 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::path::PathBuf;
 
 use readable_readability::Readability;
-use tuider_plugin_api::{
-    args_vec, cstring_or_null, free_cstring, write_err, TUIDER_PLUGIN_ABI,
-};
+use tuider_plugin_api::{TUIDER_PLUGIN_ABI, args_vec, cstring_or_null, free_cstring, write_err};
 use url::Url;
 
 struct UrlState {
@@ -260,10 +258,8 @@ fn expand_feed_window(feed_url: &str, mut items: Vec<FeedItem>) -> Vec<FeedItem>
     let Some(base) = category_base_from_feed(feed_url) else {
         return items;
     };
-    let mut seen: std::collections::HashSet<String> = items
-        .iter()
-        .filter_map(|i| i.link.clone())
-        .collect();
+    let mut seen: std::collections::HashSet<String> =
+        items.iter().filter_map(|i| i.link.clone()).collect();
     for page in 2..=FEED_ARCHIVE_MAX_PAGES {
         let page_url = format!("{base}page/{page}/");
         let Ok((_fu, _ct, html)) = http_get(&page_url) else {
@@ -316,10 +312,7 @@ fn archive_items_from_html(html: &str) -> Vec<FeedItem> {
     let mut items = Vec::new();
     let mut i = 0;
     while i + 4 < bytes.len() {
-        if bytes[i] != b'<'
-            || !bytes[i + 1].eq_ignore_ascii_case(&b'h')
-            || bytes[i + 2] != b'2'
-        {
+        if bytes[i] != b'<' || !bytes[i + 1].eq_ignore_ascii_case(&b'h') || bytes[i + 2] != b'2' {
             i += 1;
             continue;
         }
@@ -368,9 +361,8 @@ fn archive_items_from_html(html: &str) -> Vec<FeedItem> {
             end -= 1;
         }
         let published = extract_datetime_attr(&html[i..end]);
-        let body_md = format!(
-            "# {title}\n\n> link: {href}\n\n(archive stub — open link for full post)\n"
-        );
+        let body_md =
+            format!("# {title}\n\n> link: {href}\n\n(archive stub — open link for full post)\n");
         items.push(FeedItem {
             title: title.chars().take(ENTRY_TITLE_MAX).collect(),
             body_md,
@@ -609,10 +601,7 @@ fn parse_feed_items(xml: &str) -> Result<(String, Vec<FeedItem>), String> {
         if title.chars().count() > ENTRY_TITLE_MAX {
             title = title.chars().take(ENTRY_TITLE_MAX).collect();
         }
-        let published = e
-            .published
-            .or(e.updated)
-            .map(|dt| dt.timestamp());
+        let published = e.published.or(e.updated).map(|dt| dt.timestamp());
         let html_or_text = e
             .content
             .as_ref()
@@ -775,7 +764,11 @@ fn html_fragment_to_md(html: &str) -> String {
                         }
                         out.push_str("#### ");
                     }
-                    (true, "h1") | (true, "h2") | (true, "h3") | (true, "h4") | (true, "h5")
+                    (true, "h1")
+                    | (true, "h2")
+                    | (true, "h3")
+                    | (true, "h4")
+                    | (true, "h5")
                     | (true, "h6") => out.push_str("\n\n"),
                     (false, "b") | (false, "strong") => {
                         flush_text(&mut out, bold, &mut text);
@@ -893,7 +886,6 @@ fn collapse_blank_lines(s: &str) -> String {
     out
 }
 
-
 fn first_heading(md: &str) -> Option<String> {
     md.lines()
         .find_map(|l| l.strip_prefix("# ").map(|s| s.trim().to_string()))
@@ -937,7 +929,6 @@ fn cache_put(rel: &str, text: &str) -> std::io::Result<()> {
     }
     std::fs::write(path, text)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -996,7 +987,10 @@ mod tests {
         <p>More <b>bold</b> text</p>
         "#;
         let md = html_fragment_to_md(html);
-        assert!(md.contains("### New packages") || md.contains("## New packages"), "{md}");
+        assert!(
+            md.contains("### New packages") || md.contains("## New packages"),
+            "{md}"
+        );
         assert!(md.contains("[Alpha](https://ex/a)"), "{md}");
         assert!(md.contains("[The Missing README](https://ex/b)"), "{md}");
         assert!(md.contains('\n'), "expected newlines: {md:?}");
@@ -1084,7 +1078,6 @@ mod tests {
         assert!(items[0].title.contains("Hello"));
         assert!(items[0].link.as_ref().unwrap().contains("post-1"));
     }
-
 
     #[test]
     fn state_from_body_html_single() {

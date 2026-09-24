@@ -7,11 +7,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
-use ratatui::Frame;
 
 use crate::plugin::{HeadingEntry, LinkEntry};
 use crate::theme::Theme;
@@ -56,8 +56,6 @@ pub struct LinkHist {
     pub caret_line: usize,
     pub caret_col: usize,
 }
-
-
 
 impl App {
     pub fn nav_open(&self) -> bool {
@@ -114,7 +112,6 @@ impl App {
         self.status = "o outline/senses — type to filter · ↑↓ Enter jump · Esc".into();
     }
 
-
     pub(crate) fn open_consult(&mut self) {
         if self.body.is_empty() {
             self.status = "empty document".into();
@@ -154,8 +151,7 @@ impl App {
         };
         self.corpus_hist_idx = None;
         self.refilter_corpus();
-        self.status =
-            format!("corpus {n} entries — type · C-p/n hist · ↑↓ files · ←→ lines");
+        self.status = format!("corpus {n} entries — type · C-p/n hist · ↑↓ files · ←→ lines");
     }
 
     fn refilter_corpus(&mut self) {
@@ -225,7 +221,10 @@ impl App {
                         .map(|(_, l)| l.as_str())
                         .unwrap_or("");
                     let title_l = title.to_lowercase();
-                    if tokens.iter().all(|t| title_l.contains(t) || plain_l.contains(t)) {
+                    if tokens
+                        .iter()
+                        .all(|t| title_l.contains(t) || plain_l.contains(t))
+                    {
                         out.push(di);
                         if out.len() >= 500 {
                             truncated = true;
@@ -349,7 +348,6 @@ impl App {
         self.status = "nav closed".into();
     }
 
-
     fn refilter_consult(&mut self) {
         // ponytail: orderless AND of whitespace tokens; 500-cap, no fuzzy lib
         let tokens: Vec<String> = self
@@ -442,8 +440,10 @@ impl App {
         let Some(mode) = self.nav.overlay else {
             return false;
         };
-        let list_filter =
-            matches!(mode, Overlay::Toc | Overlay::Links | Overlay::Consult | Overlay::Corpus);
+        let list_filter = matches!(
+            mode,
+            Overlay::Toc | Overlay::Links | Overlay::Consult | Overlay::Corpus
+        );
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => {
@@ -466,8 +466,7 @@ impl App {
                 if mode == Overlay::Consult {
                     self.consult_history_step(1);
                 } else if !self.nav.filtered.is_empty() {
-                    self.nav.selected =
-                        (self.nav.selected + 1).min(self.nav.filtered.len() - 1);
+                    self.nav.selected = (self.nav.selected + 1).min(self.nav.filtered.len() - 1);
                     if mode == Overlay::Corpus {
                         self.nav.scroll = 0;
                         self.ensure_corpus_lines_for_selected();
@@ -551,7 +550,7 @@ impl App {
             }
             Overlay::Toc => {
                 if let Some(h) = self.headings.get(idx).cloned() {
-                    self.set_caret(h.line, 0);
+                    self.jump_to_full_line(h.line);
                     self.status = format!("jumped to: {}", h.text);
                 }
             }
@@ -594,27 +593,23 @@ impl App {
                         let hits = self.match_hits();
                         let which = line_hint
                             .and_then(|(li, text)| {
-                                hits.iter()
-                                    .position(|h| h.line == li)
-                                    .or_else(|| {
-                                        let t = text.trim();
-                                        if t.is_empty() {
-                                            return None;
-                                        }
-                                        self.body
-                                            .iter()
-                                            .position(|l| {
-                                                let p = Self::line_plain(l);
-                                                p.contains(t)
-                                                    || (!p.is_empty() && t.contains(p.trim()))
-                                            })
-                                            .and_then(|bl| hits.iter().position(|h| h.line == bl))
-                                    })
+                                hits.iter().position(|h| h.line == li).or_else(|| {
+                                    let t = text.trim();
+                                    if t.is_empty() {
+                                        return None;
+                                    }
+                                    self.body
+                                        .iter()
+                                        .position(|l| {
+                                            let p = Self::line_plain(l);
+                                            p.contains(t) || (!p.is_empty() && t.contains(p.trim()))
+                                        })
+                                        .and_then(|bl| hits.iter().position(|h| h.line == bl))
+                                })
                             })
                             .unwrap_or(0);
                         if hits.is_empty() {
-                            self.status =
-                                format!("corpus → {} (no body match)", hit.entry_title);
+                            self.status = format!("corpus → {} (no body match)", hit.entry_title);
                         } else {
                             self.jump_to_match(which);
                         }
@@ -723,8 +718,6 @@ impl App {
         }
     }
 
-
-
     /// Left-click body: open link under cursor (blue/underline spans).
     pub(crate) fn handle_mouse(&mut self, m: crossterm::event::MouseEvent) {
         use crossterm::event::{MouseButton, MouseEventKind};
@@ -832,9 +825,9 @@ impl App {
             .iter()
             .find(|l| l.text == t || l.text.contains(t) || t.contains(l.text.as_str()))
             .or_else(|| {
-                self.links
-                    .iter()
-                    .find(|l| l.line.abs_diff(line) <= 3 && (l.text.contains(t) || t.contains(&l.text)))
+                self.links.iter().find(|l| {
+                    l.line.abs_diff(line) <= 3 && (l.text.contains(t) || t.contains(&l.text))
+                })
             })
             .cloned()
     }
@@ -863,7 +856,7 @@ impl App {
                 .iter()
                 .find(|h| heading_slug(&h.text) == anchor)
             {
-                self.set_caret(h.line, 0);
+                self.jump_to_full_line(h.line);
                 self.status = format!("jumped to #{anchor}");
             } else {
                 self.link_hist.pop();
@@ -902,11 +895,7 @@ impl App {
                 }
                 self.load_selected();
                 if let Some(a) = anchor {
-                    if let Some(h) = self
-                        .headings
-                        .iter()
-                        .find(|h| heading_slug(&h.text) == a)
-                    {
+                    if let Some(h) = self.headings.iter().find(|h| heading_slug(&h.text) == a) {
                         self.set_caret(h.line, 0);
                     }
                 }
@@ -1149,14 +1138,11 @@ fn draw_corpus(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     frame.render_widget(Paragraph::new(Line::from(q_spans)), v[0]);
     if v[0].width > 0 {
         let col = app.nav.query.chars().count() as u16;
-        frame.set_cursor_position((
-            v[0].x + col.min(v[0].width.saturating_sub(1)),
-            v[0].y,
-        ));
+        frame.set_cursor_position((v[0].x + col.min(v[0].width.saturating_sub(1)), v[0].y));
     }
 
-    let cols = Layout::horizontal([Constraint::Percentage(38), Constraint::Percentage(62)])
-        .split(v[1]);
+    let cols =
+        Layout::horizontal([Constraint::Percentage(38), Constraint::Percentage(62)]).split(v[1]);
 
     // —— left: files ——
     let fvis = cols[0].height.saturating_sub(1).max(1) as usize;
@@ -1247,11 +1233,7 @@ fn draw_corpus(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         format!(" lines {}/{} ", line_sel + 1, match_lines.len())
     };
     frame.render_widget(
-        List::new(line_items).block(
-            Block::default()
-                .borders(Borders::TOP)
-                .title(lines_title),
-        ),
+        List::new(line_items).block(Block::default().borders(Borders::TOP).title(lines_title)),
         cols[1],
     );
 }
@@ -1336,11 +1318,7 @@ fn draw_list_overlay<T, F>(
 fn draw_consult(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     // bottom panel: results list + input, preview of selected line context
     let panel_h = (area.height / 2).clamp(10, 18);
-    let chunks = Layout::vertical([
-        Constraint::Min(1),
-        Constraint::Length(panel_h),
-    ])
-    .split(area);
+    let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(panel_h)]).split(area);
     let panel = chunks[1];
     frame.render_widget(Clear, panel);
 
@@ -1363,9 +1341,9 @@ fn draw_consult(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     frame.render_widget(block, panel);
 
     let v = Layout::vertical([
-        Constraint::Length(1), // input
+        Constraint::Length(1),      // input
         Constraint::Percentage(45), // hits
-        Constraint::Min(3), // preview
+        Constraint::Min(3),         // preview
     ])
     .split(inner);
 
@@ -1406,11 +1384,7 @@ fn draw_consult(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         .enumerate()
         .map(|(row, &line)| {
             let sel = start + row == app.nav.selected;
-            let plain = app
-                .body
-                .get(line)
-                .map(App::line_plain)
-                .unwrap_or_default();
+            let plain = app.body.get(line).map(App::line_plain).unwrap_or_default();
             let text = trunc(&plain, 80);
             // line number never highlighted; only query tokens in the text
             let prefix = if sel {
@@ -1429,11 +1403,7 @@ fn draw_consult(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         format!(" {} hits ", hits.len())
     };
     frame.render_widget(
-        List::new(items).block(
-            Block::default()
-                .borders(Borders::TOP)
-                .title(hits_title),
-        ),
+        List::new(items).block(Block::default().borders(Borders::TOP).title(hits_title)),
         v[1],
     );
 

@@ -23,17 +23,15 @@ fn claims_hn(args: &[String]) -> bool {
 
 fn claims_dict(args: &[String]) -> bool {
     args.iter().any(|a| a == "-g" || a == "--group")
-        || args.iter().any(|a| a.ends_with(".mdx") || a.ends_with(".MDX"))
+        || args
+            .iter()
+            .any(|a| a.ends_with(".mdx") || a.ends_with(".MDX"))
     // -s alone does not claim; needs -g or .mdx
 }
 
 fn claims_epub(args: &[String]) -> bool {
-    args.iter().any(|a| {
-        a == "-e"
-            || a == "--epub"
-            || a.ends_with(".epub")
-            || a.ends_with(".EPUB")
-    })
+    args.iter()
+        .any(|a| a == "-e" || a == "--epub" || a.ends_with(".epub") || a.ends_with(".EPUB"))
 }
 
 /// Static catalog (order = missing-hint priority: url → hn → dict → epub).
@@ -132,16 +130,16 @@ mod tests {
         assert!(claims("epub", &s(&["--epub", "x"])));
         assert!(claims("epub", &s(&["BOOK.EPUB"])));
         assert!(!claims("epub", &s(&["README.md"])));
-        assert_eq!(missing_plugin_hint(&s(&["novel.epub"]), |_: &str| false), Some("epub"));
+        assert_eq!(
+            missing_plugin_hint(&s(&["novel.epub"]), |_: &str| false),
+            Some("epub")
+        );
     }
 
     #[test]
     fn missing_hint_order_and_loaded() {
         let none = |_: &str| false;
-        assert_eq!(
-            missing_plugin_hint(&s(&["https://x"]), none),
-            Some("url")
-        );
+        assert_eq!(missing_plugin_hint(&s(&["https://x"]), none), Some("url"));
         // -u alone no longer claims url
         assert_eq!(missing_plugin_hint(&s(&["-u"]), none), None);
         assert_eq!(missing_plugin_hint(&s(&["-hn"]), none), Some("hn"));
@@ -154,10 +152,7 @@ mod tests {
             Some("url")
         );
         let has_url = |id: &str| id == "url";
-        assert_eq!(
-            missing_plugin_hint(&s(&["https://x"]), has_url),
-            None
-        );
+        assert_eq!(missing_plugin_hint(&s(&["https://x"]), has_url), None);
         assert_eq!(missing_plugin_hint(&s(&["README.md"]), none), None);
     }
 

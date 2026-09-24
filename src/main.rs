@@ -5,24 +5,25 @@ mod ai;
 mod app;
 mod code;
 mod config;
-mod loader;
 mod html_css;
 mod html_render;
+mod loader;
 mod md;
+mod org;
+mod pkg;
 mod plugin;
+mod plugin_catalog;
 mod scan;
 mod source;
 mod theme;
 mod ui;
-mod pkg;
-mod plugin_catalog;
 
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use loader::{default_plugins_dir, PluginRegistry};
-use plugin::{ai_compiled, ContentSource};
+use loader::{PluginRegistry, default_plugins_dir};
+use plugin::{ContentSource, ai_compiled};
 use source::FileTreeSource;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -80,7 +81,6 @@ fn run(registry: &PluginRegistry, plugins_dir: &std::path::Path) -> Result<(), E
         return Ok(());
     }
 
-
     let mut i = 0;
     while i < raw.len() {
         let a = &raw[i];
@@ -90,12 +90,11 @@ fn run(registry: &PluginRegistry, plugins_dir: &std::path::Path) -> Result<(), E
             "--html" => cli_html = true,
             "--db" | "--sync" | "--code" => {}
             // plugin flags (+ their values): leave for plugin open
-            "-hn" | "--hn" | "-g" | "--group" | "-s" | "--search" | "-n"
-            | "--limit" | "-m" | "-w" | "-e" | "--epub" => {
+            "-hn" | "--hn" | "-g" | "--group" | "-s" | "--search" | "-n" | "--limit" | "-m"
+            | "-w" | "-e" | "--epub" => {
                 if matches!(
                     a.as_str(),
-                    "-g"
-                        | "--group"
+                    "-g" | "--group"
                         | "-s"
                         | "--search"
                         | "-n"

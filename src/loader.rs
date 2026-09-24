@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use libloading::{Library, Symbol};
 use tuider_plugin_api::{
-    PluginTextSource, BODY_HTML_V1_PREFIX, FnAbiVersion, FnClose, FnEntryAt, FnEntryCount,
-    FnHandles, FnId, FnLoadBody, FnName, FnOpen, FnStringFree, FnTitle, TUIDER_PLUGIN_ABI,
+    BODY_HTML_V1_PREFIX, FnAbiVersion, FnClose, FnEntryAt, FnEntryCount, FnHandles, FnId,
+    FnLoadBody, FnName, FnOpen, FnStringFree, FnTitle, PluginTextSource, TUIDER_PLUGIN_ABI,
 };
 
 /// Optional: `extern "C" fn tuider_source_cycle(src: *mut c_void) -> c_int` (1 = cycled).
@@ -21,7 +21,6 @@ type FnDictReverse = tuider_plugin_api::FnDictReverse;
 type FnDictList = tuider_plugin_api::FnDictList;
 type FnDictSelect = tuider_plugin_api::FnDictSelect;
 type FnDictFulltextSearch = tuider_plugin_api::FnDictFulltextSearch;
-
 
 pub struct LoadedPlugin {
     #[allow(dead_code)] // kept for skip/debug messages
@@ -46,7 +45,6 @@ pub struct LoadedPlugin {
     dict_select: Option<FnDictSelect>,
     dict_fulltext_search: Option<FnDictFulltextSearch>,
 }
-
 
 pub struct DynSource {
     plugin: Arc<LoadedPlugin>,
@@ -139,9 +137,7 @@ impl DynSource {
         if p.is_null() {
             return None;
         }
-        let s = unsafe { CStr::from_ptr(p) }
-            .to_string_lossy()
-            .into_owned();
+        let s = unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
         unsafe { (self.plugin.string_free)(p) };
         Some(s)
     }
@@ -181,7 +177,12 @@ impl DynSource {
         };
         let raw = unsafe { f(self.handle, c.as_ptr(), limit) };
         self.take_cstr(raw)
-            .map(|s| s.lines().map(str::to_owned).filter(|x| !x.is_empty()).collect())
+            .map(|s| {
+                s.lines()
+                    .map(str::to_owned)
+                    .filter(|x| !x.is_empty())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -194,7 +195,12 @@ impl DynSource {
         };
         let raw = unsafe { f(self.handle, c.as_ptr(), limit) };
         self.take_cstr(raw)
-            .map(|s| s.lines().map(str::to_owned).filter(|x| !x.is_empty()).collect())
+            .map(|s| {
+                s.lines()
+                    .map(str::to_owned)
+                    .filter(|x| !x.is_empty())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -209,9 +215,14 @@ impl DynSource {
         if raw.is_null() {
             return Vec::new();
         }
-        let s = unsafe { CStr::from_ptr(raw) }.to_string_lossy().into_owned();
+        let s = unsafe { CStr::from_ptr(raw) }
+            .to_string_lossy()
+            .into_owned();
         unsafe { (self.plugin.string_free)(raw) };
-        s.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect()
+        s.lines()
+            .filter(|l| !l.is_empty())
+            .map(str::to_owned)
+            .collect()
     }
 
     fn dict_list(&self) -> Vec<String> {
@@ -242,7 +253,6 @@ impl DynSource {
         self.refresh_meta();
         true
     }
-
 }
 
 /// Host ContentSource: plugin text → ratatui Lines.
@@ -277,11 +287,7 @@ impl crate::plugin::ContentSource for HostSource {
     fn load(&mut self, index: usize, width: usize) -> crate::plugin::LoadResult {
         match self.inner.load_text(index, width) {
             Ok(text) => {
-                let name = self
-                    .names
-                    .get(index)
-                    .map(|s| s.as_str())
-                    .unwrap_or("?");
+                let name = self.names.get(index).map(|s| s.as_str()).unwrap_or("?");
                 let (body, hint) = split_status_trailer(&text);
                 let w = width.max(20);
                 let (lines, links, headings) = render_plugin_body_doc(body, w);
@@ -357,13 +363,10 @@ impl crate::plugin::ContentSource for HostSource {
     }
 }
 
-
 #[cfg_attr(not(test), allow(dead_code))]
 fn render_plugin_body(text: &str, width: usize) -> Vec<ratatui::text::Line<'static>> {
     render_plugin_body_doc(text, width).0
 }
-
-
 
 pub fn render_plugin_body_doc(
     text: &str,
@@ -514,7 +517,10 @@ fn numbered_sense_level(s: &str) -> Option<u8> {
             _ => None,
         };
     }
-    if matches!(c0, '①' | '②' | '③' | '④' | '⑤' | '⑥' | '⑦' | '⑧' | '⑨' | '⑩') {
+    if matches!(
+        c0,
+        '①' | '②' | '③' | '④' | '⑤' | '⑥' | '⑦' | '⑧' | '⑨' | '⑩'
+    ) {
         return Some(1);
     }
     None
@@ -622,7 +628,10 @@ mod body_render_tests {
             .flat_map(|l| l.spans.iter())
             .find(|s| s.content.contains("quoted"));
         let q = quoted.expect("quoted span");
-        assert!(q.style.add_modifier.contains(Modifier::ITALIC), "css italic");
+        assert!(
+            q.style.add_modifier.contains(Modifier::ITALIC),
+            "css italic"
+        );
         assert!(q.style.fg.is_some(), "css fg color");
     }
 
@@ -648,7 +657,10 @@ mod body_render_tests {
         ];
         let hs = super::outline_from_lines(&lines);
         assert!(hs.iter().any(|h| h.text.contains("fn main")), "{hs:?}");
-        assert!(hs.iter().any(|h| h.text.contains("pub struct App")), "{hs:?}");
+        assert!(
+            hs.iter().any(|h| h.text.contains("pub struct App")),
+            "{hs:?}"
+        );
     }
 
     #[test]
@@ -668,8 +680,18 @@ mod body_render_tests {
             .iter()
             .find(|h| h.text.starts_with("2)"))
             .expect("2) outline");
-        assert!(h1.line < lines.len(), "h1.line {} >= {}", h1.line, lines.len());
-        assert!(h2.line < lines.len(), "h2.line {} >= {}", h2.line, lines.len());
+        assert!(
+            h1.line < lines.len(),
+            "h1.line {} >= {}",
+            h1.line,
+            lines.len()
+        );
+        assert!(
+            h2.line < lines.len(),
+            "h2.line {} >= {}",
+            h2.line,
+            lines.len()
+        );
         assert!(h2.line > h1.line, "senses ordered: {h1:?} {h2:?}");
         // first wrapped row of sense 1 should still start with 1)
         let t0: String = lines[h1.line]
@@ -715,8 +737,7 @@ mod body_render_tests {
         use crate::plugin::ContentSource;
         use std::path::PathBuf;
 
-        let so = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target/debug/libtuider_epub.so");
+        let so = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/libtuider_epub.so");
         if !so.is_file() {
             eprintln!("skip: build libtuider_epub.so first ({})", so.display());
             return;
@@ -827,10 +848,18 @@ fn load_one(path: &Path) -> Result<LoadedPlugin, String> {
             return Err(format!("ABI {ver} != host {TUIDER_PLUGIN_ABI}"));
         }
         let id_fn: Symbol<FnId> = lib.get(b"tuider_plugin_id\0").map_err(|e| e.to_string())?;
-        let name_fn: Symbol<FnName> = lib.get(b"tuider_plugin_name\0").map_err(|e| e.to_string())?;
-        let open: Symbol<FnOpen> = lib.get(b"tuider_plugin_open\0").map_err(|e| e.to_string())?;
-        let close: Symbol<FnClose> = lib.get(b"tuider_plugin_close\0").map_err(|e| e.to_string())?;
-        let title: Symbol<FnTitle> = lib.get(b"tuider_source_title\0").map_err(|e| e.to_string())?;
+        let name_fn: Symbol<FnName> = lib
+            .get(b"tuider_plugin_name\0")
+            .map_err(|e| e.to_string())?;
+        let open: Symbol<FnOpen> = lib
+            .get(b"tuider_plugin_open\0")
+            .map_err(|e| e.to_string())?;
+        let close: Symbol<FnClose> = lib
+            .get(b"tuider_plugin_close\0")
+            .map_err(|e| e.to_string())?;
+        let title: Symbol<FnTitle> = lib
+            .get(b"tuider_source_title\0")
+            .map_err(|e| e.to_string())?;
         let entry_count: Symbol<FnEntryCount> = lib
             .get(b"tuider_source_entry_count\0")
             .map_err(|e| e.to_string())?;
@@ -840,8 +869,9 @@ fn load_one(path: &Path) -> Result<LoadedPlugin, String> {
         let load_body: Symbol<FnLoadBody> = lib
             .get(b"tuider_source_load_body\0")
             .map_err(|e| e.to_string())?;
-        let string_free: Symbol<FnStringFree> =
-            lib.get(b"tuider_string_free\0").map_err(|e| e.to_string())?;
+        let string_free: Symbol<FnStringFree> = lib
+            .get(b"tuider_string_free\0")
+            .map_err(|e| e.to_string())?;
         let handles: Option<Symbol<FnHandles>> = lib.get(b"tuider_plugin_handles\0").ok();
 
         let id = CStr::from_ptr(id_fn()).to_string_lossy().into_owned();

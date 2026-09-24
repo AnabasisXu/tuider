@@ -70,10 +70,7 @@ pub fn selected_plain(body: &[Line<'static>], start: usize, end: usize) -> Strin
 }
 
 fn line_text(line: &Line<'_>) -> String {
-    line.spans
-        .iter()
-        .map(|s| s.content.as_ref())
-        .collect()
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
 }
 
 /// Char-level selection plain text (exclusive end col on last line).
@@ -132,11 +129,7 @@ fn word_fwd_col(chars: &[char], col: usize) -> Option<usize> {
     while i < n && !is_word_char(chars[i]) {
         i += 1;
     }
-    if i < n {
-        Some(i)
-    } else {
-        None
-    }
+    if i < n { Some(i) } else { None }
 }
 
 /// Previous word start on `chars` at/before `col`.
@@ -174,11 +167,7 @@ fn first_word_start(chars: &[char]) -> usize {
     while i < n && !is_word_char(chars[i]) {
         i += 1;
     }
-    if i < n {
-        i
-    } else {
-        0
-    }
+    if i < n { i } else { 0 }
 }
 
 /// Inclusive end of current/next word from `col`.
@@ -744,10 +733,7 @@ impl App {
 }
 
 /// Returns trimmed selection text, or None for Cursor / empty after trim.
-pub(crate) fn selection_plain_from(
-    body: &[Line<'static>],
-    v: VisualSel,
-) -> Option<String> {
+pub(crate) fn selection_plain_from(body: &[Line<'static>], v: VisualSel) -> Option<String> {
     let text = match v.kind {
         VisualKind::Cursor => return None,
         VisualKind::Line => {
@@ -792,10 +778,7 @@ mod tests {
 
     #[test]
     fn selection_plain_char_and_line() {
-        let body = vec![
-            Line::from("  hello  "),
-            Line::from("world"),
-        ];
+        let body = vec![Line::from("  hello  "), Line::from("world")];
         // Char: cols exclusive end on last line (same as selected_plain_char)
         let char_sel = VisualSel {
             kind: VisualKind::Char,

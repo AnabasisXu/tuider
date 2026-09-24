@@ -7,11 +7,9 @@ use std::collections::HashMap;
 use std::os::raw::{c_char, c_int, c_void};
 use std::path::Path;
 
-use rbook::epub::reader::LinearBehavior;
 use rbook::Epub;
-use tuider_plugin_api::{
-    args_vec, cstring_or_null, free_cstring, write_err, TUIDER_PLUGIN_ABI,
-};
+use rbook::epub::reader::LinearBehavior;
+use tuider_plugin_api::{TUIDER_PLUGIN_ABI, args_vec, cstring_or_null, free_cstring, write_err};
 
 #[derive(Debug)]
 struct Chapter {
@@ -43,20 +41,12 @@ pub extern "C" fn tuider_plugin_name() -> *const c_char {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tuider_plugin_handles(argc: c_int, argv: *const *const c_char) -> c_int {
     let args = unsafe { args_vec(argc, argv) };
-    if claims_args(&args) {
-        1
-    } else {
-        0
-    }
+    if claims_args(&args) { 1 } else { 0 }
 }
 
 fn claims_args(args: &[String]) -> bool {
-    args.iter().any(|a| {
-        a == "-e"
-            || a == "--epub"
-            || a.ends_with(".epub")
-            || a.ends_with(".EPUB")
-    })
+    args.iter()
+        .any(|a| a == "-e" || a == "--epub" || a.ends_with(".epub") || a.ends_with(".EPUB"))
 }
 
 fn pick_path(args: &[String]) -> Option<String> {
@@ -584,10 +574,7 @@ mod tests {
             img_to_md(r#"img src="OEBPS/fig.png" alt="Diagram""#),
             "![Diagram](OEBPS/fig.png)"
         );
-        assert_eq!(
-            img_to_md(r#"img src='a/b/c.jpg'"#),
-            "![c.jpg](a/b/c.jpg)"
-        );
+        assert_eq!(img_to_md(r#"img src='a/b/c.jpg'"#), "![c.jpg](a/b/c.jpg)");
         assert_eq!(
             img_to_md(r#"img src="data:image/png;base64,xx" alt="x""#),
             "![x]()"
@@ -597,9 +584,8 @@ mod tests {
 
     #[test]
     fn xhtml_img_emits_md_image() {
-        let md = xhtml_to_markdown(
-            r#"<p>see</p><img src="images/fig1.png" alt="Fig 1"/><p>next</p>"#,
-        );
+        let md =
+            xhtml_to_markdown(r#"<p>see</p><img src="images/fig1.png" alt="Fig 1"/><p>next</p>"#);
         assert!(md.contains("![Fig 1](images/fig1.png)"), "{md}");
         assert!(md.contains("see"), "{md}");
         assert!(md.contains("next"), "{md}");
@@ -608,7 +594,10 @@ mod tests {
     #[test]
     fn numeric_entities() {
         let md = xhtml_to_markdown("<p>a&#160;b&#x2d;c</p>");
-        assert!(md.contains("a b-c") || md.contains("a b‐c") || md.contains("a b"), "{md}");
+        assert!(
+            md.contains("a b-c") || md.contains("a b‐c") || md.contains("a b"),
+            "{md}"
+        );
         assert!(md.contains('b'), "{md}");
         assert!(!md.contains("&#"), "{md}");
     }
@@ -725,12 +714,7 @@ mod tests {
         let argv = [path_c.as_ptr()];
         let mut err = vec![0u8; 256];
         let handle = unsafe {
-            tuider_plugin_open(
-                1,
-                argv.as_ptr(),
-                err.as_mut_ptr() as *mut c_char,
-                err.len(),
-            )
+            tuider_plugin_open(1, argv.as_ptr(), err.as_mut_ptr() as *mut c_char, err.len())
         };
         assert!(!handle.is_null(), "open failed");
         assert_eq!(tuider_plugin_abi_version(), TUIDER_PLUGIN_ABI);
@@ -773,17 +757,10 @@ mod tests {
         let argv = [path.as_ptr()];
         let mut err = vec![0u8; 256];
         let handle = unsafe {
-            tuider_plugin_open(
-                1,
-                argv.as_ptr(),
-                err.as_mut_ptr() as *mut c_char,
-                err.len(),
-            )
+            tuider_plugin_open(1, argv.as_ptr(), err.as_mut_ptr() as *mut c_char, err.len())
         };
         assert!(handle.is_null());
-        let msg = CStr::from_bytes_until_nul(&err)
-            .unwrap()
-            .to_string_lossy();
+        let msg = CStr::from_bytes_until_nul(&err).unwrap().to_string_lossy();
         assert!(msg.contains("not a file") || msg.contains("open"), "{msg}");
     }
 

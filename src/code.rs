@@ -42,16 +42,13 @@ fn escape_html(s: &str) -> String {
 pub fn highlight_body(path: &Path, text: &str) -> String {
     let ss = &*SYNTAXES;
     let theme = theme();
-    let ext_owned = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|ext| {
-            let lower = ext.to_ascii_lowercase();
-            match lower.as_str() {
-                "yml" => "yaml".to_string(),
-                _ => lower,
-            }
-        });
+    let ext_owned = path.extension().and_then(|e| e.to_str()).map(|ext| {
+        let lower = ext.to_ascii_lowercase();
+        match lower.as_str() {
+            "yml" => "yaml".to_string(),
+            _ => lower,
+        }
+    });
     let syntax = ext_owned
         .as_deref()
         .and_then(|ext| ss.find_syntax_by_extension(ext))
@@ -146,7 +143,10 @@ mod tests {
         assert!(out.contains("<span class=\"c"), "{out}");
         let toml = "[pkg]\nname = \"x\"\n";
         let out = highlight_body(Path::new("Cargo.toml"), toml);
-        assert!(out.starts_with(BODY_HTML_V1_PREFIX), "toml should highlight");
+        assert!(
+            out.starts_with(BODY_HTML_V1_PREFIX),
+            "toml should highlight"
+        );
         assert!(out.contains("<span class=\"c"), "{out}");
     }
 

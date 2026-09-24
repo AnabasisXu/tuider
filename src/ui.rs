@@ -1,10 +1,10 @@
 //! Layout / draw — ported principles from mdx-tui ui.rs.
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
-use ratatui::Frame;
 
 use crate::app::{App, SearchLayout};
 use crate::theme::Theme;
@@ -185,8 +185,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_right(frame, area, app);
         // content_area for page steps — bottom status row reserved when no panel
         if !app.dict_panel_open() {
-            let layout =
-                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
+            let layout = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
             app.set_content_area(Some(layout[0]));
         } else {
             let panel_h = (app.dict_panel_names().len() as u16)
@@ -361,7 +360,9 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
         let section = |s: &str| {
             Span::styled(
                 s.to_string(),
-                Style::default().fg(theme.accent()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.accent())
+                    .add_modifier(Modifier::BOLD),
             )
         };
         let mut help = vec![
@@ -369,13 +370,18 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
             Line::from(vec![
                 Span::styled(
                     "  TUIDER ",
-                    Style::default().fg(theme.title()).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme.title())
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled("— terminal reader", Style::default().fg(theme.muted())),
             ]),
             Line::from(""),
             Line::from(section("  Basics")),
-            Line::from(vec![key("    Sidebar on "), desc("focus=search; letters filter only")]),
+            Line::from(vec![
+                key("    Sidebar on "),
+                desc("focus=search; letters filter only"),
+            ]),
             Line::from(vec![
                 key("    Ctrl+F   "),
                 desc(if app.can_plugin_action() {
@@ -384,7 +390,10 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
                     "with sidebar off, o/f commands work"
                 }),
             ]),
-            Line::from(vec![key("    ↑ / ↓    "), desc("browse list (prefetch body)")]),
+            Line::from(vec![
+                key("    ↑ / ↓    "),
+                desc("browse list (prefetch body)"),
+            ]),
             Line::from(vec![key("    Enter    "), desc("open / reload selection")]),
         ];
         if app.can_plugin_action() {
@@ -394,22 +403,53 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
             ]));
         }
         help.extend([
-            Line::from(vec![key("    [ / ]    "), desc("prev/next major section (sidebar off)")]),
+            Line::from(vec![
+                key("    [ / ]    "),
+                desc("prev/next major section (sidebar off)"),
+            ]),
             Line::from(""),
             Line::from(section("  Keys")),
-            Line::from(vec![key("    Ctrl+S   "), desc("search layout: left / top")]),
-            Line::from(vec![key("    /        "), desc("in-body vim search (sidebar off)")]),
+            Line::from(vec![
+                key("    Ctrl+S   "),
+                desc("search layout: left / top"),
+            ]),
+            Line::from(vec![
+                key("    /        "),
+                desc("in-body vim search (sidebar off)"),
+            ]),
             Line::from(vec![key("    n / N    "), desc("next/prev match")]),
-            Line::from(vec![key("    v V s zz "), desc("visual / line-visual / line-jump / avy")]),
-            Line::from(vec![key("    f / o    "), desc("links / outline; click link copies URL")]),
-            Line::from(vec![key("    Alt+f    "), desc("consult multi-word filter jump")]),
-            Line::from(vec![key("    A-S-f    "), desc("corpus search all entries")]),
-            Line::from(vec![key("    O        "), desc("open directory (sidebar off)")]),
+            Line::from(vec![
+                key("    v V s zz "),
+                desc("visual / line-visual / line-jump / avy"),
+            ]),
+            Line::from(vec![
+                key("    z / Z    "),
+                desc("fold heading (title line) / expand-collapse cycle"),
+            ]),
+            Line::from(vec![
+                key("    f / o    "),
+                desc("links / outline; click link copies URL"),
+            ]),
+            Line::from(vec![
+                key("    Alt+f    "),
+                desc("consult multi-word filter jump"),
+            ]),
+            Line::from(vec![
+                key("    A-S-f    "),
+                desc("corpus search all entries"),
+            ]),
+            Line::from(vec![
+                key("    O        "),
+                desc("open directory (sidebar off)"),
+            ]),
             Line::from(vec![key("    ?        "), desc("help")]),
             Line::from(""),
             Line::from(section("  Scroll")),
             Line::from(vec![key("    ↑↓ / Pg  "), desc("focused pane")]),
-            Line::from(vec![key("    Alt+↑↓   "), desc("other pane (usually body)")]),
+            Line::from(vec![
+                key("    Alt+↑↓   "),
+                desc("other pane (usually body)"),
+            ]),
         ]);
         frame.render_widget(Paragraph::new(help), inner);
         return;
@@ -485,10 +525,7 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
     // body lines are pre-wrapped to content_width (loader); no Paragraph wrap
-    frame.render_widget(
-        Paragraph::new(rendered).scroll((scroll, 0)),
-        inner,
-    );
+    frame.render_widget(Paragraph::new(rendered).scroll((scroll, 0)), inner);
 }
 
 fn paint_cursor_cell(line: Line<'static>, col: usize, theme: Theme) -> Line<'static> {
@@ -619,7 +656,10 @@ fn highlight_contiguous(line: &Line<'static>, q: &str, theme: Theme) -> Line<'st
             while i < n && mark[i] {
                 i += 1;
             }
-            spans.push(Span::styled(chars[start..i].iter().collect::<String>(), hit));
+            spans.push(Span::styled(
+                chars[start..i].iter().collect::<String>(),
+                hit,
+            ));
         } else {
             let mut buf = String::new();
             let mut st = pairs[i].1;
@@ -747,10 +787,15 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
         ),
         Span::styled(
             format!(
-                " {}/{}  {}  ? help  C-q quit ",
-                app.list_sel().saturating_add(1).min(app.filtered_len().max(1)),
+                " {}/{}  {}{}  ? help  C-q quit ",
+                app.list_sel()
+                    .saturating_add(1)
+                    .min(app.filtered_len().max(1)),
                 app.filtered_len(),
-                app.status()
+                app.status(),
+                app.caret_heading_text()
+                    .map(|t| format!("  · {t}"))
+                    .unwrap_or_default()
             ),
             Style::default().fg(theme.muted()),
         ),

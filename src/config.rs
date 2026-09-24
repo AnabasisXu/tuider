@@ -214,11 +214,7 @@ pub fn load_wordlist(name: &str) -> Option<std::collections::HashSet<String>> {
         .filter(|s| !s.is_empty() && !s.starts_with('#'))
         .map(str::to_owned)
         .collect();
-    if set.is_empty() {
-        None
-    } else {
-        Some(set)
-    }
+    if set.is_empty() { None } else { Some(set) }
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -244,9 +240,7 @@ pub fn user_config_path() -> PathBuf {
 
 /// Path that would be / is loaded; for help display.
 pub fn config_display_path() -> PathBuf {
-    load()
-        .map(|(p, _)| p)
-        .unwrap_or_else(user_config_path)
+    load().map(|(p, _)| p).unwrap_or_else(user_config_path)
 }
 
 /// If no config file exists on search path, write minimal template to user path.
@@ -309,8 +303,8 @@ fn env_provider() -> Option<AiProvider> {
     if api_key.trim().is_empty() {
         return None;
     }
-    let base_url = std::env::var("TUIDER_AI_BASE_URL")
-        .unwrap_or_else(|_| "https://api.openai.com/v1".into());
+    let base_url =
+        std::env::var("TUIDER_AI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into());
     let model = std::env::var("TUIDER_AI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
     let base_url = validate_ai_base_url(&base_url)?;
     Some(AiProvider {
@@ -320,7 +314,6 @@ fn env_provider() -> Option<AiProvider> {
         model,
     })
 }
-
 
 fn ai_section_to_providers(ai: &AiSection) -> Vec<AiProvider> {
     let default_key = ai
@@ -336,10 +329,7 @@ fn ai_section_to_providers(ai: &AiSection) -> Vec<AiProvider> {
             .iter()
             .filter_map(|e| {
                 let base_url = validate_ai_base_url(&e.base_url)?;
-                let api_key = e
-                    .api_key
-                    .clone()
-                    .unwrap_or_else(|| default_key.clone());
+                let api_key = e.api_key.clone().unwrap_or_else(|| default_key.clone());
                 if api_key.is_empty() {
                     return None;
                 }

@@ -105,7 +105,10 @@ impl StyleTable {
             out.matched = true;
         }
         for class in classes {
-            for key in [(String::new(), class.to_string()), (tag.to_string(), class.to_string())] {
+            for key in [
+                (String::new(), class.to_string()),
+                (tag.to_string(), class.to_string()),
+            ] {
                 if let Some(r) = self.rules.get(&key) {
                     out.style.merge(&r.style);
                     if r.prefix.is_some() {
@@ -145,7 +148,9 @@ fn parse_selector(sel: &str) -> Option<(String, String, bool)> {
         None => (sel, false),
     };
     if sel.is_empty()
-        || sel.contains([' ', '\t', '\n', '>', '+', '~', '(', '[', ']', '*', '#', ':', '@'])
+        || sel.contains([
+            ' ', '\t', '\n', '>', '+', '~', '(', '[', ']', '*', '#', ':', '@',
+        ])
     {
         return None;
     }
@@ -291,7 +296,8 @@ fn readable((r, g, b): (u8, u8, u8)) -> Option<Color> {
     if spread <= 24 {
         // Grey: remap luma linearly into [GREY_FLOOR, FLOOR). All channels
         // set to the same target to stay perfectly grey.
-        let target = GREY_FLOOR as u32 + l as u32 * (FLOOR as u32 - GREY_FLOOR as u32) / FLOOR as u32;
+        let target =
+            GREY_FLOOR as u32 + l as u32 * (FLOOR as u32 - GREY_FLOOR as u32) / FLOOR as u32;
         let c = target.min(255) as u8;
         Some(Color::Rgb(c, c, c))
     } else {
@@ -369,7 +375,9 @@ mod tests {
         // #1685C0 (luma 106) is hued but below the floor → lifted, hue kept.
         let t = StyleTable::parse(".src { color: #1685C0; font-style: italic; }");
         let r = t.resolve("span", &["src"]);
-        let Some(Color::Rgb(rr, gg, bb)) = r.style.fg else { panic!("expected lifted rgb") };
+        let Some(Color::Rgb(rr, gg, bb)) = r.style.fg else {
+            panic!("expected lifted rgb")
+        };
         assert!(bb > gg && gg > rr, "hue not preserved: {rr},{gg},{bb}");
         assert!(luma((rr, gg, bb)) >= FLOOR, "not lifted to floor");
         assert!(r.style.italic);
@@ -381,7 +389,9 @@ mod tests {
         let t = StyleTable::parse("span.error { color: brown; text-decoration: line-through; }");
         let hit = t.resolve("span", &["error"]);
         // brown (luma 78) is hued below the floor → lifted, red stays dominant.
-        let Some(Color::Rgb(rr, gg, bb)) = hit.style.fg else { panic!("expected lifted rgb") };
+        let Some(Color::Rgb(rr, gg, bb)) = hit.style.fg else {
+            panic!("expected lifted rgb")
+        };
         assert!(rr > gg && rr > bb, "hue not preserved: {rr},{gg},{bb}");
         assert!(luma((rr, gg, bb)) >= FLOOR, "not lifted to floor");
         assert!(hit.style.strike);
@@ -395,7 +405,9 @@ mod tests {
         // perfectly grey, distinct from the lighter source and from body cyan.
         let t = StyleTable::parse("span.ch{color:dimgray}");
         let ch = t.resolve("span", &["ch"]);
-        let Some(Color::Rgb(r, g, b)) = ch.style.fg else { panic!("expected grey") };
+        let Some(Color::Rgb(r, g, b)) = ch.style.fg else {
+            panic!("expected grey")
+        };
         assert!(r == g && g == b, "grey not preserved: {r},{g},{b}");
         let l = luma((r, g, b));
         assert!(l >= GREY_FLOOR, "too dim: {l}");
@@ -418,9 +430,17 @@ mod tests {
     #[test]
     fn grey_remap_spread() {
         // The three key greys must stay spread apart (not collapsed to one point).
-        let t = StyleTable::parse(".a{color:rgb(19,18,18)} .b{color:dimgray} .c{color:rgb(115,115,125)}");
-        let extract = |cls| { let r=t.resolve("span",&[cls]); match r.style.fg { Some(Color::Rgb(c,c2,c3)) if c==c2 && c2==c3 => c as i16, _ => panic!("{cls} not grey") }};
-        let (a,b,_c) = (extract("a"), extract("b"), extract("c"));
+        let t = StyleTable::parse(
+            ".a{color:rgb(19,18,18)} .b{color:dimgray} .c{color:rgb(115,115,125)}",
+        );
+        let extract = |cls| {
+            let r = t.resolve("span", &[cls]);
+            match r.style.fg {
+                Some(Color::Rgb(c, c2, c3)) if c == c2 && c2 == c3 => c as i16,
+                _ => panic!("{cls} not grey"),
+            }
+        };
+        let (a, b, _c) = (extract("a"), extract("b"), extract("c"));
         assert!(b - a >= 10, "example vs gloss too close: {a} vs {b}");
         // gloss vs source gap narrows as GREY_FLOOR rises; source has italic
         // as an additional visual distinction, so color gap alone is not required.
@@ -430,7 +450,10 @@ mod tests {
     fn bright_grey_kept() {
         // A light grey (above the floor) stays as-is; only dim greys drop.
         let t = StyleTable::parse(".g{color:grey}");
-        assert_eq!(t.resolve("span", &["g"]).style.fg, Some(Color::Rgb(128, 128, 128)));
+        assert_eq!(
+            t.resolve("span", &["g"]).style.fg,
+            Some(Color::Rgb(128, 128, 128))
+        );
     }
 
     #[test]
@@ -479,7 +502,8 @@ mod tests {
 
     #[test]
     fn comments_and_media_do_not_break_parsing() {
-        let css = "/* hi */ .a{color:brown} @media (min-width:576px){.b{color:red}} .c{font-weight:bold}";
+        let css =
+            "/* hi */ .a{color:brown} @media (min-width:576px){.b{color:red}} .c{font-weight:bold}";
         let t = StyleTable::parse(css);
         assert!(t.resolve("span", &["a"]).matched);
         assert!(t.resolve("span", &["c"]).style.bold);

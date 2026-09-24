@@ -35,24 +35,20 @@ fn walk(root: &Path, dir: &Path, recursive: bool, out: &mut Vec<(String, PathBuf
         } else if is_doc(&path)
             && let Ok(relative) = path.strip_prefix(root)
         {
-            out.push((
-                relative.to_string_lossy().replace('\\', "/"),
-                path,
-            ));
+            out.push((relative.to_string_lossy().replace('\\', "/"), path));
         }
     }
 }
 
-/// True for md, txt, mdx, and script/code extensions.
+/// True for md, txt, mdx, org, and script/code extensions.
 pub fn is_doc(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| {
-            e.eq_ignore_ascii_case("md")
-                || e.eq_ignore_ascii_case("txt")
-                || e.eq_ignore_ascii_case("mdx")
-                || is_code_ext(e)
-        })
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        e.eq_ignore_ascii_case("md")
+            || e.eq_ignore_ascii_case("txt")
+            || e.eq_ignore_ascii_case("mdx")
+            || e.eq_ignore_ascii_case("org")
+            || is_code_ext(e)
+    })
 }
 
 /// Source / script extensions highlighted by core `code` module.
@@ -65,7 +61,6 @@ const CODE_EXTS: &[&str] = &[
     "rb", "php", "cs", "sh", "bash", "zsh", "fish", "toml", "yaml", "yml", "json", "html", "css",
     "sql", "lua", "vim", "zig",
 ];
-
 
 /// Collision-safe display names: stem, or `stem (parent)` when stems collide.
 fn display_names(entries: Vec<(String, PathBuf)>) -> Vec<(String, PathBuf)> {
@@ -153,6 +148,12 @@ mod tests {
         let names: Vec<_> = scan_docs(&dir, true).into_iter().map(|(n, _)| n).collect();
         assert_eq!(names, vec!["intro (a)", "intro (b)"]);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn org_is_doc() {
+        assert!(is_doc(Path::new("notes.org")));
+        assert!(!is_doc(Path::new("notes.org.bak")));
     }
 
     #[test]

@@ -2,8 +2,8 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::visual::VisualKind;
 use super::App;
+use super::visual::VisualKind;
 
 impl App {
     /// Returns true if the app should quit.
@@ -59,12 +59,10 @@ impl App {
             return false;
         }
 
-
         if self.line_jump.is_some() {
             self.handle_line_jump_key(key);
             return false;
         }
-
 
         if self.handle_global(key, ctrl, alt) {
             return true;
@@ -131,13 +129,7 @@ impl App {
         false
     }
 
-    fn handle_normal_key(
-        &mut self,
-        key: KeyEvent,
-        ctrl: bool,
-        alt: bool,
-        shift: bool,
-    ) -> bool {
+    fn handle_normal_key(&mut self, key: KeyEvent, ctrl: bool, alt: bool, shift: bool) -> bool {
         // Sidebar search box owns focus whenever it is visible.
         // Plain letters / symbols type into filter; single-key commands are disabled.
         let sidebar = self.show_sidebar() && self.visual.is_none();
@@ -154,8 +146,6 @@ impl App {
             }
             return false;
         }
-
-
 
         if sidebar {
             // active / search: n/N must work even while sidebar filter owns letters
@@ -255,7 +245,6 @@ impl App {
             }
         }
 
-
         if !self.body.is_empty() && self.visual.is_none() {
             match key.code {
                 KeyCode::Char('v') if key.modifiers == KeyModifiers::NONE => {
@@ -268,8 +257,16 @@ impl App {
                     return false;
                 }
                 KeyCode::Char('z') if key.modifiers == KeyModifiers::NONE => {
+                    // 光标正处标题行 → 折叠该标题；否则保留 zz avy 跳转
+                    if self.toggle_fold_at_caret() {
+                        return false;
+                    }
                     self.pending_z = true;
                     self.status = "z…".into();
+                    return false;
+                }
+                KeyCode::Char('Z') if key.modifiers == KeyModifiers::NONE => {
+                    self.cycle_fold();
                     return false;
                 }
                 KeyCode::Char('V')
@@ -325,8 +322,7 @@ impl App {
 
         if self.visual.is_none() {
             if matches!(key.code, KeyCode::Char('O'))
-                && (key.modifiers == KeyModifiers::NONE
-                    || key.modifiers == KeyModifiers::SHIFT)
+                && (key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT)
             {
                 self.open_current_dir();
                 return false;
@@ -380,9 +376,8 @@ impl App {
     }
 
     /// Labels for visible lines: user keys qwedrasdfwzxcv (unique).
-    const LINE_JUMP_KEYS: &'static [char] = &[
-        'q', 'w', 'e', 'd', 'r', 'a', 's', 'f', 'z', 'x', 'c', 'v',
-    ];
+    const LINE_JUMP_KEYS: &'static [char] =
+        &['q', 'w', 'e', 'd', 'r', 'a', 's', 'f', 'z', 'x', 'c', 'v'];
     /// 1-char if fits; else 2-char (then 3) combos so full viewport is covered.
     pub(crate) fn line_jump_label_strings(n: usize) -> Vec<String> {
         let keys = Self::LINE_JUMP_KEYS;
@@ -459,8 +454,7 @@ impl App {
                 }
             }
             KeyCode::Char(c)
-                if key.modifiers == KeyModifiers::NONE
-                    || key.modifiers == KeyModifiers::SHIFT =>
+                if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT =>
             {
                 let c = c.to_ascii_lowercase();
                 if !c.is_ascii_alphabetic() {
@@ -495,9 +489,6 @@ impl App {
             }
         }
     }
-
-
-
 
     /// Global chords. Returns true = quit.
     fn handle_global(&mut self, key: KeyEvent, ctrl: bool, alt: bool) -> bool {
@@ -577,7 +568,9 @@ impl App {
         }
 
         let hit = match key.code {
-            KeyCode::Char('h') | KeyCode::Left if !ctrl && (none || key.modifiers == KeyModifiers::NONE) => {
+            KeyCode::Char('h') | KeyCode::Left
+                if !ctrl && (none || key.modifiers == KeyModifiers::NONE) =>
+            {
                 self.body_move_col(-1);
                 true
             }
@@ -828,7 +821,9 @@ impl App {
                 self.visual_goto_viewport('L');
                 true
             }
-            KeyCode::PageDown | KeyCode::Char('f') if ctrl || matches!(key.code, KeyCode::PageDown) => {
+            KeyCode::PageDown | KeyCode::Char('f')
+                if ctrl || matches!(key.code, KeyCode::PageDown) =>
+            {
                 self.visual_page(true, false);
                 true
             }
@@ -849,14 +844,7 @@ impl App {
         }
     }
 
-    fn handle_nav(
-        &mut self,
-        key: KeyEvent,
-        alt: bool,
-        ctrl: bool,
-        shift: bool,
-        sidebar: bool,
-    ) {
+    fn handle_nav(&mut self, key: KeyEvent, alt: bool, ctrl: bool, shift: bool, sidebar: bool) {
         match key.code {
             KeyCode::Up if alt => {
                 if sidebar {
@@ -952,8 +940,6 @@ impl App {
             }
             // [ ] section jump handled in handle_normal_key when filter empty
             _ => {}
-
-
         }
     }
 }

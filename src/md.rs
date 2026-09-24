@@ -6,9 +6,7 @@
 //!
 //! No syntect/mermaid/math in core (YAGNI until asked).
 
-use pulldown_cmark::{
-    CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
-};
+use pulldown_cmark::{CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
@@ -82,17 +80,9 @@ impl MdTheme {
     }
 }
 
-
 // ── public API ────────────────────────────────────────────────────────────
+pub use crate::plugin::RenderedDoc;
 use crate::plugin::{HeadingEntry, LinkEntry};
-
-#[derive(Default)]
-pub struct RenderedDoc {
-    pub lines: Vec<Line<'static>>,
-    pub links: Vec<LinkEntry>,
-    pub headings: Vec<HeadingEntry>,
-}
-
 
 /// Render markdown at a given terminal content width (word wrap).
 pub fn render_md_width(text: &str, width: usize) -> Vec<Line<'static>> {
@@ -147,7 +137,10 @@ pub fn load_body(path: &std::path::Path) -> std::io::Result<Vec<Line<'static>>> 
     load_body_width(path, 88)
 }
 
-pub fn load_body_width(path: &std::path::Path, width: usize) -> std::io::Result<Vec<Line<'static>>> {
+pub fn load_body_width(
+    path: &std::path::Path,
+    width: usize,
+) -> std::io::Result<Vec<Line<'static>>> {
     let text = std::fs::read_to_string(path)?;
     let is_md = path
         .extension()
@@ -264,7 +257,9 @@ impl<'a> Renderer<'a> {
                         let sep = "─".repeat(self.width.min(60));
                         self.lines.push(Line::from(Span::styled(
                             sep,
-                            Style::new().fg(self.theme.heading_sep).add_modifier(Modifier::DIM),
+                            Style::new()
+                                .fg(self.theme.heading_sep)
+                                .add_modifier(Modifier::DIM),
                         )));
                         self.push_empty();
                     } else {
@@ -378,10 +373,8 @@ impl<'a> Renderer<'a> {
                     }
                     None => String::new(),
                 };
-                self.current.push(Span::styled(
-                    bullet,
-                    Style::new().fg(self.theme.bullet),
-                ));
+                self.current
+                    .push(Span::styled(bullet, Style::new().fg(self.theme.bullet)));
             }
             Event::End(TagEnd::Item) => {
                 // task checkbox already inserted on TaskListMarker
@@ -407,11 +400,7 @@ impl<'a> Renderer<'a> {
                 let url = std::mem::take(&mut self.link_url);
                 let text = {
                     let t = std::mem::take(&mut self.link_text);
-                    if t.is_empty() {
-                        url.clone()
-                    } else {
-                        t
-                    }
+                    if t.is_empty() { url.clone() } else { t }
                 };
                 if !url.is_empty() {
                     // avoid adjacent wrap duplicates of same url+text
@@ -540,9 +529,7 @@ impl<'a> Renderer<'a> {
         }
         if self.bold {
             // ponytail: bold = accent (HN by-name, emphasis)
-            style = Style::new()
-                .fg(self.theme.h4)
-                .add_modifier(Modifier::BOLD);
+            style = Style::new().fg(self.theme.h4).add_modifier(Modifier::BOLD);
             if self.italic {
                 style = style.add_modifier(Modifier::ITALIC);
             }
@@ -571,8 +558,7 @@ impl<'a> Renderer<'a> {
                     .add_modifier(Modifier::UNDERLINED);
             }
         }
-        self.current
-            .push(Span::styled(text.to_string(), style));
+        self.current.push(Span::styled(text.to_string(), style));
     }
 
     fn flush_line(&mut self) {
@@ -615,7 +601,10 @@ impl<'a> Renderer<'a> {
         } else {
             lang.to_string()
         };
-        let top = format!("┌─ {label_text} {}", "─".repeat(w.saturating_sub(label_text.width() + 4).max(1)));
+        let top = format!(
+            "┌─ {label_text} {}",
+            "─".repeat(w.saturating_sub(label_text.width() + 4).max(1))
+        );
         self.lines.push(Line::from(Span::styled(
             top.chars().take(w).collect::<String>(),
             Style::new().fg(border),
@@ -677,7 +666,8 @@ impl<'a> Renderer<'a> {
         // fit table into width roughly
         let total: usize = widths.iter().sum::<usize>() + cols * 3 + 1;
         if total > self.width {
-            let scale = self.width.saturating_sub(cols * 3 + 1) as f64 / widths.iter().sum::<usize>() as f64;
+            let scale = self.width.saturating_sub(cols * 3 + 1) as f64
+                / widths.iter().sum::<usize>() as f64;
             for w in &mut widths {
                 *w = ((*w as f64) * scale).floor().max(3.0) as usize;
             }
@@ -905,15 +895,19 @@ mod tests {
     use super::*;
     #[test]
     fn word_wrap_breaks_on_space() {
-        let lines = wrap_spans(
-            vec![Span::raw("hello beautiful world")],
-            12,
-        );
+        let lines = wrap_spans(vec![Span::raw("hello beautiful world")], 12);
         let texts: Vec<String> = lines
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
-        assert!(texts.iter().all(|t| !t.contains("beautif") || t.contains("beautiful") || t.starts_with("world") || t.ends_with("hello") || t.contains(' ')), "{texts:?}");
+        assert!(
+            texts.iter().all(|t| !t.contains("beautif")
+                || t.contains("beautiful")
+                || t.starts_with("world")
+                || t.ends_with("hello")
+                || t.contains(' ')),
+            "{texts:?}"
+        );
         // first line should end at a word boundary
         let joined = texts.join("|");
         assert!(!joined.contains("beautifu|l"), "mid-word split: {joined}");
@@ -937,14 +931,34 @@ mod tests {
         assert!(texts.len() >= 2, "{texts:?}");
     }
 
-
     #[test]
     fn links_and_headings_indexed() {
-        let doc = render_md_doc("# Hello\n\nSee [ex](https://example.com) and [loc](./x.md).\n\n## Sec\n", 80);
-        assert!(doc.headings.iter().any(|h| h.text == "Hello" && h.level == 1), "{:?}", doc.headings);
-        assert!(doc.headings.iter().any(|h| h.text == "Sec" && h.level == 2), "{:?}", doc.headings);
-        assert!(doc.links.iter().any(|l| l.url == "https://example.com"), "{:?}", doc.links);
-        assert!(doc.links.iter().any(|l| l.url == "./x.md"), "{:?}", doc.links);
+        let doc = render_md_doc(
+            "# Hello\n\nSee [ex](https://example.com) and [loc](./x.md).\n\n## Sec\n",
+            80,
+        );
+        assert!(
+            doc.headings
+                .iter()
+                .any(|h| h.text == "Hello" && h.level == 1),
+            "{:?}",
+            doc.headings
+        );
+        assert!(
+            doc.headings.iter().any(|h| h.text == "Sec" && h.level == 2),
+            "{:?}",
+            doc.headings
+        );
+        assert!(
+            doc.links.iter().any(|l| l.url == "https://example.com"),
+            "{:?}",
+            doc.links
+        );
+        assert!(
+            doc.links.iter().any(|l| l.url == "./x.md"),
+            "{:?}",
+            doc.links
+        );
     }
 
     #[test]
@@ -974,7 +988,10 @@ mod tests {
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
-        assert!(joined.contains("[x]") || joined.contains("done"), "{joined}");
+        assert!(
+            joined.contains("[x]") || joined.contains("done"),
+            "{joined}"
+        );
     }
 
     #[test]
@@ -984,7 +1001,10 @@ mod tests {
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
-        assert!(joined.contains("rust") || joined.contains("main"), "{joined}");
+        assert!(
+            joined.contains("rust") || joined.contains("main"),
+            "{joined}"
+        );
     }
 
     #[test]

@@ -55,8 +55,7 @@ pub type FnLoadBody =
 /// Required: free string returned by title/entry/load.
 pub type FnStringFree = unsafe extern "C" fn(s: *mut c_char);
 /// Optional dict: lookup word → heap text (JSON lines or multi-entry text).
-pub type FnDictLookup =
-    unsafe extern "C" fn(src: *mut c_void, word: *const c_char) -> *mut c_char;
+pub type FnDictLookup = unsafe extern "C" fn(src: *mut c_void, word: *const c_char) -> *mut c_char;
 /// Optional dict: prefix search → newline-separated headwords.
 pub type FnDictSearch =
     unsafe extern "C" fn(src: *mut c_void, prefix: *const c_char, limit: usize) -> *mut c_char;
@@ -71,12 +70,13 @@ pub type FnDictSelect = unsafe extern "C" fn(src: *mut c_void, index: usize) -> 
 pub type FnDictFulltextSearch =
     unsafe extern "C" fn(src: *mut c_void, query: *const c_char, limit: usize) -> *mut c_char;
 
-
 // ── Helpers for plugin authors ────────────────────────────────────────────
 
 /// Allocate a C string for ABI return values.
 pub fn cstring_or_null(s: &str) -> *mut c_char {
-    CString::new(s.replace('\0', "")).map(|c| c.into_raw()).unwrap_or(std::ptr::null_mut())
+    CString::new(s.replace('\0', ""))
+        .map(|c| c.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 
 /// # Safety

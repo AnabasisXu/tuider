@@ -6,14 +6,15 @@ mod keys;
 mod mode;
 pub use mode::InputMode;
 
+pub(crate) mod fold;
 pub(crate) mod nav;
 mod search;
 mod visual;
 
 use crossterm::event;
+use ratatui::DefaultTerminal;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
-use ratatui::DefaultTerminal;
 
 use crate::plugin::{ContentSource, HeadingEntry, LinkEntry};
 use crate::theme::Theme;
@@ -21,9 +22,10 @@ use crate::ui;
 
 pub use search::MatchHit;
 #[allow(unused_imports)] // tests + external API surface
-pub use visual::{selected_plain, selected_plain_char, VisualKind, VisualSel};
+pub use visual::{VisualKind, VisualSel, selected_plain, selected_plain_char};
 
-static FILE_CFG: std::sync::OnceLock<Option<crate::config::FileConfig>> = std::sync::OnceLock::new();
+static FILE_CFG: std::sync::OnceLock<Option<crate::config::FileConfig>> =
+    std::sync::OnceLock::new();
 
 pub fn set_file_config(cfg: Option<crate::config::FileConfig>) {
     let _ = FILE_CFG.set(cfg);
@@ -82,6 +84,14 @@ pub struct App {
     pub(crate) pending_g: bool,
     /// zz pending (first `z`).
     pub(crate) pending_z: bool,
+    /// 折叠状态（与 headings 等长；true = 收起子树）。
+    pub(crate) collapsed: Vec<bool>,
+    /// 完整正文（load 时保存；折叠时克隆可见行到 self.body）。
+    pub(crate) orig_body: Vec<Line<'static>>,
+    /// 可见行位置 → 完整行号（self.body[i] == orig_body[full_of_pos[i]]）。
+    pub(crate) full_of_pos: Vec<usize>,
+    /// 完整行号 → 可见行位置（隐藏 = None）。
+    pub(crate) pos_of_full: Vec<Option<usize>>,
     /// f-link in-app history; Backspace pops (doc + scroll/caret).
     pub(crate) link_hist: Vec<nav::LinkHist>,
     /// `v` visible-line jump labels (multi-key ok) + typed prefix.
@@ -143,6 +153,10 @@ impl App {
             dict_panel_names: Vec::new(),
             pending_g: false,
             pending_z: false,
+            collapsed: Vec::new(),
+            orig_body: Vec::new(),
+            full_of_pos: Vec::new(),
+            pos_of_full: Vec::new(),
             link_hist: Vec::new(),
             line_jump: None,
             line_jump_buf: String::new(),
@@ -216,7 +230,6 @@ impl App {
             self.visual.is_some(),
         )
     }
-
 
     pub fn theme(&self) -> Theme {
         self.theme
@@ -399,8 +412,7 @@ impl App {
     }
 
     pub(crate) fn caret_line(&self) -> usize {
-        self.caret_line
-            .min(self.body.len().saturating_sub(1))
+        self.caret_line.min(self.body.len().saturating_sub(1))
     }
 
     pub(crate) fn caret_col(&self) -> usize {
@@ -492,8 +504,6 @@ impl App {
             self.load_selected();
         }
     }
-
-
 
     pub(crate) fn refilter(&mut self) {
         let q = self.filter.to_lowercase();
@@ -666,9 +676,14 @@ impl App {
             return;
         };
         let result = self.source.load(di, self.content_width);
-        self.body = result.lines;
+        self.orig_body = result.lines;
+        self.body = self.orig_body.clone();
         self.links = result.links;
         self.headings = result.headings;
+        self.collapsed = vec![false; self.headings.len()];
+        let n = self.orig_body.len();
+        self.full_of_pos = (0..n).collect();
+        self.pos_of_full = (0..n).map(Some).collect();
         self.scroll = 0;
         self.caret_line = 0;
         self.caret_col = 0;
@@ -682,6 +697,69 @@ impl App {
             self.vim_match_idx = 0;
             self.jump_to_match(0);
         }
+    }
+
+    // ── 折叠（通用大纲折叠；z/Z 键接入 keys.rs）─────────────────────────────
+
+    /// 按折叠状态重建可见 body（self.body ← 可见行；维护 full↔vis 双向映射）。
+    pub(crate) fn rebuild_folded(&mut self) {
+        let mut vis: Vec<usize> = Vec::new();
+        let mut pos: Vec<Option<usize>> = vec![None; self.orig_body.len()];
+        for (f, _line) in self.orig_body.iter().enumerate() {
+            if fold::line_visible(&self.headings, &self.collapsed, f) {
+                pos[f] = Some(vis.len());
+                vis.push(f);
+            }
+        }
+        self.body = vis.iter().map(|&f| self.orig_body[f].clone()).collect();
+        self.full_of_pos = vis;
+        self.pos_of_full = pos;
+        let max = self.body.len().saturating_sub(1);
+        self.scroll = self.scroll.min(max as u16);
+        self.caret_line = self.caret_line.min(max);
+        self.ensure_line_visible(self.caret_line);
+    }
+
+    /// 光标处标题折叠切换；仅标题行触发时返回 true。
+    pub(crate) fn toggle_fold_at_caret(&mut self) -> bool {
+        let Some(&full) = self.full_of_pos.get(self.caret_line) else {
+            return false;
+        };
+        let Some(hi) = fold::heading_at(&self.headings, full) else {
+            return false;
+        };
+        if self.headings[hi].line != full {
+            return false; // 仅标题行触发折叠
+        }
+        fold::toggle(&self.headings, &mut self.collapsed, hi);
+        self.rebuild_folded();
+        true
+    }
+
+    /// 折叠 cycle：全展开 → 收 2 级及以上 → 全展开。
+    pub(crate) fn cycle_fold(&mut self) {
+        fold::cycle(&self.headings, &mut self.collapsed);
+        self.rebuild_folded();
+    }
+
+    /// 跳到完整行号：先展开祖先链，再按可见坐标定位（o/f/# 跳转用）。
+    pub(crate) fn jump_to_full_line(&mut self, line: usize) {
+        if self.orig_body.is_empty() {
+            self.set_caret(0, 0);
+            return;
+        }
+        let line = line.min(self.orig_body.len() - 1);
+        fold::unfold_ancestors(&self.headings, &mut self.collapsed, line);
+        self.rebuild_folded();
+        let vis = self.pos_of_full[line].unwrap_or(0);
+        self.set_caret(vis, 0);
+    }
+
+    /// 光标所在最内层标题文本（面包屑；无标题返回 None）。
+    pub fn caret_heading_text(&self) -> Option<String> {
+        let full = *self.full_of_pos.get(self.caret_line)?;
+        let hi = fold::heading_at(&self.headings, full)?;
+        Some(self.headings[hi].text.clone())
     }
 
     /// Plugin-specific action then reload body (e.g. HN fetch article).
@@ -703,9 +781,6 @@ impl App {
         let _ok = self.source.action(di, action);
         self.load_selected();
     }
-
-
-
 
     /// Jump among major sections: Meta → Article → Comments (not every subheading).
     pub(crate) fn jump_section(&mut self, dir: isize) {
@@ -751,12 +826,8 @@ impl App {
         self.status = format!("§ {}  ({}/{})  [ ]", text, target + 1, n);
     }
 
-
     pub(crate) fn line_plain(line: &Line<'_>) -> String {
-        line.spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect()
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
     pub(crate) fn line_len(&self, line: usize) -> usize {
@@ -776,7 +847,10 @@ fn major_section_pool(headings: &[crate::plugin::HeadingEntry]) -> Vec<usize> {
         if let Some(i) = headings.iter().position(|h| {
             h.text.eq_ignore_ascii_case(name)
                 || h.text.eq_ignore_ascii_case(&format!("# {name}"))
-                || h.text.trim_start_matches('#').trim().eq_ignore_ascii_case(name)
+                || h.text
+                    .trim_start_matches('#')
+                    .trim()
+                    .eq_ignore_ascii_case(name)
         }) {
             out.push(i);
         }
@@ -807,8 +881,6 @@ fn major_section_pool(headings: &[crate::plugin::HeadingEntry]) -> Vec<usize> {
     }
     pool
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -851,7 +923,6 @@ mod tests {
 
     #[test]
     fn selected_plain_joins_lines() {
-
         let body = vec![
             Line::from(Span::raw("a")),
             Line::from(Span::raw("b")),
@@ -910,7 +981,14 @@ mod tests {
         ];
         let hits = search::find_hits(&body, "foo");
         assert_eq!(hits.len(), 3);
-        assert_eq!(hits[0], MatchHit { line: 0, start: 0, end: 3 });
+        assert_eq!(
+            hits[0],
+            MatchHit {
+                line: 0,
+                start: 0,
+                end: 3
+            }
+        );
         assert_eq!(hits[2].line, 1);
     }
 
@@ -932,8 +1010,22 @@ mod tests {
         let body = vec![Line::from(Span::raw("see md then txt here"))];
         let hits = search::find_hits(&body, "txt md");
         assert_eq!(hits.len(), 2);
-        assert_eq!(hits[0], MatchHit { line: 0, start: 4, end: 6 }); // "md"
-        assert_eq!(hits[1], MatchHit { line: 0, start: 12, end: 15 }); // "txt"
+        assert_eq!(
+            hits[0],
+            MatchHit {
+                line: 0,
+                start: 4,
+                end: 6
+            }
+        ); // "md"
+        assert_eq!(
+            hits[1],
+            MatchHit {
+                line: 0,
+                start: 12,
+                end: 15
+            }
+        ); // "txt"
     }
 
     #[test]
@@ -969,10 +1061,7 @@ mod tests {
         }
         fn load(&mut self, index: usize, _width: usize) -> crate::plugin::LoadResult {
             let name = self.entries.get(index).cloned().unwrap_or_default();
-            crate::plugin::LoadResult::plain(
-                vec![ratatui::text::Line::from(name.clone())],
-                name,
-            )
+            crate::plugin::LoadResult::plain(vec![ratatui::text::Line::from(name.clone())], name)
         }
         fn list_dicts(&self) -> Vec<String> {
             self.dicts.clone()
@@ -1093,8 +1182,8 @@ mod tests {
     #[test]
     fn testbackend_draws_help_overlay() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let mut app = App::new(Box::new(MockPlain {
             entries: vec!["alpha".into(), "beta".into()],
@@ -1121,8 +1210,7 @@ mod tests {
     #[test]
     fn app_loads_epub_plugin_body() {
         use std::path::PathBuf;
-        let so = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target/debug/libtuider_epub.so");
+        let so = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/libtuider_epub.so");
         if !so.is_file() {
             eprintln!("skip: no {}", so.display());
             return;
