@@ -11,8 +11,13 @@ permissions:
 jobs:
   linux-slim:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tuider
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: tuider
       # dict crate path-dep: ../../../mdx-tui-mdict → sibling of tuider/
       - uses: actions/checkout@v4
         with:
