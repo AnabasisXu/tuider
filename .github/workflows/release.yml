@@ -30,12 +30,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tuider-linux-slim
-          path: dist/*.tar.gz
+          path: tuider/dist/*.tar.gz
       - name: GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.tar.gz
+          files: tuider/dist/*.tar.gz
           generate_release_notes: true
           body: |
             Linux **slim** tarball: `tuider` + `libtuider_{url,hn,epub}.so`.
