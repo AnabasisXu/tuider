@@ -13,6 +13,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # dict crate path-dep: ../../../mdx-tui-mdict → sibling of tuider/
+      - uses: actions/checkout@v4
+        with:
+          repository: AnabasisXu/mdx-tui-mdict
+          path: mdx-tui-mdict
       - uses: dtolnay/rust-toolchain@stable
       - name: package slim
         run: bash scripts/package-slim.sh dist
